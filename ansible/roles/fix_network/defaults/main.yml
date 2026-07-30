@@ -1,0 +1,65 @@
+---
+##############################################################################
+# roles/fix_network/defaults/main.yml
+##############################################################################
+
+# vm_workdir vem de group_vars/all.yml (compartilhado com extract e upload).
+
+# Quais discos recebem o ajuste de rede.
+# Por padrão SÓ O PRIMEIRO disco (o de boot) — é onde vive o /etc.
+# Rodar virt-customize num disco de dados sem sistema operacional falha com
+# "no operating system was found on this disk".
+fix_network_disks: "{{ [vm.disks | first] }}"
+
+# Disco de boot — é dele que lemos a configuração de rede antiga.
+fix_network_boot_disk: "{{ vm.disks | first }}"
+
+# Nome do arquivo netplan injetado. O prefixo 99 garante que ele seja o
+# ÚLTIMO a ser lido, sobrepondo qualquer configuração anterior.
+fix_network_netplan_file: 99-migracao-netcfg.yaml
+
+# Glob de interfaces que o netplan deve casar.
+# "en*" cobre os nomes previsíveis do systemd (enp1s0, ens3, eno1...).
+# É exatamente o que resolve a troca de nome ens160 (VMware) -> enp1s0 (KVM).
+fix_network_match_glob: "en*"
+
+# ---------------------------------------------------------------------------
+# PRESERVAÇÃO DO IP FIXO
+#
+# true  = lê o netplan que já existe DENTRO da imagem (virt-cat, offline) e
+#         reescreve o mesmo endereço, gateway e DNS amarrados ao nome NOVO da
+#         interface. VM com IP fixo continua com o IP fixo.
+# false = sempre DHCP genérico.
+#
+# Quando nenhum endereço é encontrado (a VM já usava DHCP, ou a distro não usa
+# netplan), cai automaticamente no DHCP — nunca deixa a VM sem configuração.
+# ---------------------------------------------------------------------------
+fix_network_preserve_static: true
+
+# Onde procurar a configuração de rede dentro da imagem.
+fix_network_guest_netplan_dir: /etc/netplan
+
+# Override manual, por VM, em vars/vms.yml. Vence a detecção automática.
+# Use quando quiser MUDAR o endereço durante a migração:
+#
+#   network:
+#     addresses: ["192.168.31.50/24"]
+#     routes:
+#       - to: default
+#         via: 192.168.31.1
+#     nameservers:
+#       addresses: ["192.168.31.9"]
+#
+# Para forçar DHCP numa VM específica, use `network: {}` (dicionário vazio).
+fix_network_static_override: "{{ vm.network | default(None) }}"
+
+# Arquivos que atrapalham a rede depois da migração e são removidos:
+#   70-persistent-net.rules -> amarra o nome da interface ao MAC ANTIGO
+#   50-cloud-init.yaml      -> netplan gerado pelo cloud-init com o nome antigo
+fix_network_remove_files:
+  - /etc/udev/rules.d/70-persistent-net.rules
+  - /etc/netplan/50-cloud-init.yaml
+
+# Timeout do virt-customize (segundos). Ele sobe um appliance libguestfs,
+# o que pode ser lento na primeira execução.
+fix_network_timeout: 1800

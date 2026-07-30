@@ -1,0 +1,121 @@
+---
+##############################################################################
+# role: create_vm
+#
+# O que faz: cria a VM no oVirt, anexa os discos já enviados (o primeiro como
+# bootável) e adiciona a placa de rede virtio.
+#
+# Entrada:
+#   vm             — dict da VM (vars/vms.yml)
+#   vm_disk_items  — lista com alias/UUID/bootável de cada disco
+#   ovirt_auth     — sessão autenticada
+#
+# Onde roda: delegado ao host de virtualização, que é quem tem o SDK Python
+#            do oVirt (python3-ovirt-engine-sdk4) exigido pelos módulos.
+#
+# ORDEM IMPORTA: VM primeiro, depois discos, depois NIC. Anexar disco a VM
+# inexistente falha, e o firmware precisa estar correto ANTES do primeiro
+# boot — trocar BIOS<->UEFI depois costuma deixar a VM sem bootar.
+#
+# FIRMWARE — é o que decide se a VM sobe ou não:
+#   bios -> q35_sea_bios
+#   uefi -> q35_ovmf
+# Valores válidos de bios_type na coleção ovirt.ovirt 3.x:
+#   i440fx_sea_bios, q35_ovmf, q35_sea_bios, q35_secure_boot
+##############################################################################
+
+- name: "[create_vm] Validar as entradas da role"
+  ansible.builtin.assert:
+    that:
+      - vm_disk_items is defined
+      - vm_disk_items | length > 0
+      - ovirt_auth is defined
+      - create_vm_firmware in ovirt_bios_type_map
+    fail_msg: >-
+      Entradas inválidas. Verifique `vm_disk_items`, `ovirt_auth` e se
+      firmware ('{{ create_vm_firmware }}') é uma chave de
+      ovirt_bios_type_map ({{ ovirt_bios_type_map.keys() | list | join(', ') }}).
+    quiet: true
+
+- name: "[create_vm] Criar/atualizar a VM no oVirt"
+  ovirt.ovirt.ovirt_vm:
+    auth: "{{ ovirt_auth }}"
+    name: "{{ vm.name }}"
+    cluster: "{{ ovirt_cluster }}"
+    # `present` cria a VM DESLIGADA. Assim você valida o resultado antes de
+    # ligar. Para ligar automaticamente, mude vm_state_after_create em
+    # group_vars/all.yml para `running`.
+    state: "{{ vm_state_after_create }}"
+    type: "{{ create_vm_type }}"
+    bios_type: "{{ create_vm_bios_type }}"
+    # O módulo aceita sufixos humanos como "8GiB".
+    memory: "{{ create_vm_memory_gib }}GiB"
+    cpu_sockets: "{{ create_vm_cpu_sockets }}"
+    cpu_cores: "{{ create_vm_cpu_cores }}"
+    cpu_threads: "{{ create_vm_cpu_threads }}"
+    # `operating_system` só é enviado quando definido em vars/vms.yml.
+    # ATENÇÃO: a lista de IDs válidos varia por versão do engine — confira os
+    # valores aceitos no seu OLVM antes de confiar num nome.
+    operating_system: "{{ create_vm_operating_system | default(omit, true) }}"
+    comment: "Migrada do ESXi {{ esxi_host }} via IaC (firmware={{ create_vm_firmware }})"
+    timeout: "{{ create_vm_timeout }}"
+    # Não queremos que o módulo crie disco algum: os discos já existem,
+    # enviados pela role upload, e são anexados na task seguinte.
+  register: create_vm_result
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[create_vm] Anexar os discos migrados à VM"
+  # Anexamos por ID (o UUID determinístico gerado no migrate_one.yml).
+  # `state: attached` diz ao módulo "este disco já existe, apenas ligue-o
+  # a esta VM" — sem recriar nem apagar nada.
+  ovirt.ovirt.ovirt_disk:
+    auth: "{{ ovirt_auth }}"
+    id: "{{ item.id }}"
+    vm_name: "{{ vm.name }}"
+    # A descrição é aplicada aqui, e não no upload: o `ovirt-img` do Oracle
+    # Linux 8 não tem a flag --description (a documentação online descreve uma
+    # versão mais nova). Este módulo aceita, então o dado não se perde.
+    description: "Migrado do ESXi {{ esxi_host }} ({{ item.disk }}.vmdk)"
+    state: attached
+    interface: "{{ create_vm_disk_interface }}"
+    # Só o primeiro disco da lista é bootável.
+    bootable: "{{ item.bootable }}"
+    activate: true
+    timeout: "{{ create_vm_timeout }}"
+  loop: "{{ vm_disk_items }}"
+  loop_control:
+    label: "{{ item.alias }} (bootable={{ item.bootable }})"
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[create_vm] Adicionar a placa de rede virtio"
+  # `profile` vazio = o módulo escolhe sozinho quando a rede lógica tem
+  # apenas um perfil de vNIC, que é o caso mais comum.
+  ovirt.ovirt.ovirt_nic:
+    auth: "{{ ovirt_auth }}"
+    vm: "{{ vm.name }}"
+    name: "{{ ovirt_nic_name }}"
+    network: "{{ ovirt_network }}"
+    profile: "{{ ovirt_vnic_profile | default(omit, true) }}"
+    interface: "{{ create_vm_nic_interface }}"
+    state: present
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[create_vm] Ler o estado final da VM"
+  ovirt.ovirt.ovirt_vm_info:
+    auth: "{{ ovirt_auth }}"
+    pattern: "name={{ vm.name }}"
+  register: create_vm_info
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[create_vm] Resumo da VM criada"
+  ansible.builtin.debug:
+    msg:
+      - "VM: {{ vm.name }}  (id={{ create_vm_info.ovirt_vms[0].id }})"
+      - "Status: {{ create_vm_info.ovirt_vms[0].status }}"
+      - "Firmware: {{ create_vm_firmware }} -> bios_type={{ create_vm_bios_type }}"
+      - "CPU: {{ create_vm_cpu_sockets }} socket(s) x {{ create_vm_cpu_cores }} core(s) x {{ create_vm_cpu_threads }} thread(s)"
+      - "Memória: {{ create_vm_memory_gib }} GiB"
+      - "Discos anexados: {{ vm_disk_items | map(attribute='alias') | join(', ') }}"
+      - "Próximo passo: ligar a VM e conferir se ela pegou IP por DHCP."
+  when: create_vm_info.ovirt_vms | length > 0

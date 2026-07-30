@@ -1,0 +1,179 @@
+##############################################################################
+# group_vars/all.yml — configuração NÃO-SECRETA do ambiente.
+# Este arquivo é versionado no GitHub público: nada de senhas aqui.
+# Senhas ficam em group_vars/vault.yml (criptografado, ignorado pelo git).
+##############################################################################
+
+# ---------------------------------------------------------------------------
+# Engine OLVM (hosted-engine)
+# ---------------------------------------------------------------------------
+ovirt_engine_fqdn: olvm.mvrc.local
+
+# ATENÇÃO — são DUAS URLs diferentes, e trocá-las é erro comum:
+#   * ovirt_engine_api_url  -> usada pelos MÓDULOS ovirt.ovirt (termina em /api)
+#   * ovirt_engine_base_url -> usada pelo CLI ovirt-img (só o host, sem path)
+ovirt_engine_api_url: "https://{{ ovirt_engine_fqdn }}/ovirt-engine/api"
+ovirt_engine_base_url: "https://{{ ovirt_engine_fqdn }}"
+
+# Usuário da API. Com Keycloak (oVirt/OLVM 4.5+) o formato tem dois "@".
+ovirt_username: "admin@ovirt@internalsso"
+
+# A senha vem do vault: veja group_vars/vault.yml.example
+ovirt_password: "{{ vault_ovirt_password }}"
+
+# O certificado do engine NÃO traz o FQDN no SAN, então a verificação de
+# hostname falha. Enquanto o certificado não for corrigido, seguimos com
+# insecure=true (equivale ao --insecure do ovirt-img).
+# Para endurecer depois: coloque o CA em ovirt_ca_file e mude para false.
+ovirt_insecure: true
+ovirt_ca_file: ""    # ex.: /etc/pki/ovirt-engine/ca.pem
+
+# ---------------------------------------------------------------------------
+# Destino no oVirt
+# ---------------------------------------------------------------------------
+ovirt_cluster: Default
+ovirt_datacenter: Default
+
+# Fase de migração: tudo cai no hosted_storage. Quando houver um domínio
+# dedicado, basta mudar aqui (ou sobrescrever por VM em vars/vms.yml).
+ovirt_storage_domain: hosted_storage
+
+# PLACEHOLDER: nome da rede lógica do oVirt. `ovirtmgmt` é o padrão de
+# instalação; confirme em Compute > Networks se você criou outra.
+ovirt_network: ovirtmgmt
+
+# Perfil de vNIC. Vazio = o módulo escolhe sozinho quando a rede tem apenas
+# um perfil (caso mais comum).
+ovirt_vnic_profile: ""
+
+# Interfaces virtuais padrão das VMs migradas.
+ovirt_nic_name: nic1
+ovirt_nic_interface: virtio      # virtio | e1000 | rtl8139 | ...
+ovirt_disk_interface: virtio_scsi  # virtio | ide | sata | virtio_scsi
+
+# ---------------------------------------------------------------------------
+# Origem VMware (ESXi)
+# ---------------------------------------------------------------------------
+esxi_host: 192.168.31.12
+esxi_user: root
+esxi_datastore: VS2_HD2_1TB
+
+# No ESXi os datastores ficam sob /vmfs/volumes/<nome>.
+esxi_datastore_path: "/vmfs/volumes/{{ esxi_datastore }}"
+
+# Datastore desta VM. O ambiente tem MAIS DE UM (VS2_HD2_1TB e VS2_HD1_1TB),
+# então cada VM pode sobrescrever com `esxi_datastore:` em vars/vms.yml.
+esxi_vm_datastore: "{{ vm.esxi_datastore | default(esxi_datastore) }}"
+
+# Caminho completo da VM na origem. Duas coisas variam por VM e as duas têm
+# override, porque descobrimos que nenhuma das duas é confiável por convenção:
+#   * o datastore (as VMs estão espalhadas em dois)
+#   * o nome da pasta (VM renomeada mantém o nome ANTIGO nos arquivos —
+#     ex.: a VM "MySQL_HO" mora na pasta "MySQL-HO")
+# Depende de `vm`, resolvida em tempo de execução, por isso mora aqui e não
+# nos defaults das roles.
+esxi_vm_path: "/vmfs/volumes/{{ esxi_vm_datastore }}/{{ vm.esxi_folder | default(vm.name) }}"
+
+# Autenticação no ESXi para a cópia dos discos.
+# false (recomendado) = chave SSH pública instalada no ESXi
+#   (no ESXi a chave vai em /etc/ssh/keys-root/authorized_keys)
+# true = usa sshpass com vault_esxi_ssh_password. Funciona, mas a senha fica
+#        visível no `ps` do host durante a cópia. Use só se não houver opção.
+esxi_use_ssh_password: false
+
+# Opções extras de ssh/scp contra o ESXi, como LISTA (vira argv, sem shell).
+esxi_ssh_extra_opts:
+  - "-o"
+  - "StrictHostKeyChecking=no"
+  - "-o"
+  - "UserKnownHostsFile=/dev/null"
+
+# ---------------------------------------------------------------------------
+# Como falamos com o ESXi
+#
+# REGRA: NADA conecta no ESXi direto do runner/estação. Todo acesso sai do host
+# de virtualização (192.168.31.11). Assim existe UMA única chave SSH para
+# instalar — a do usuário do 31.11 autorizada em /etc/ssh/keys-root/
+# authorized_keys no ESXi — em vez de uma por máquina que roda Ansible.
+#
+# esxi_ssh_cmd  -> string, para EXECUTAR comando no ESXi (precisa de shell por
+#                  causa de globs e redirecionamentos: '*.vmx', 2>/dev/null)
+# esxi_scp_argv -> lista, prefixo do scp (argv evita shell na cópia longa)
+# ---------------------------------------------------------------------------
+#
+# CUIDADO ao editar as duas variáveis abaixo: TODO o conteúdo precisa caber
+# dentro de UM único bloco {{ ... }}. Num bloco YAML dobrado (>-), linhas mais
+# indentadas que a primeira têm a quebra de linha PRESERVADA em vez de virar
+# espaço. Se a quebra cair entre dois blocos {{ }}, ela vira "\n" literal no
+# comando e o shell lê duas linhas — o erro aparece como `usage: ssh` seguido
+# de `-o: command not found`. Dentro de um único {{ }}, a quebra é só espaço em
+# branco para o Jinja e não chega ao comando.
+esxi_ssh_cmd: >-
+  {{ ((['sshpass', '-p', vault_esxi_ssh_password | default('') | quote, 'ssh']
+       if (esxi_use_ssh_password | bool)
+       else ['ssh', '-o', 'BatchMode=yes'])
+      + esxi_ssh_extra_opts
+      + [esxi_user ~ '@' ~ esxi_host]) | join(' ') }}
+
+esxi_scp_argv: >-
+  {{ (['sshpass', '-p', vault_esxi_ssh_password | default('')]
+      if (esxi_use_ssh_password | bool) else [])
+     + ['scp']
+     + ([] if (esxi_use_ssh_password | bool) else ['-B'])
+     + esxi_ssh_extra_opts }}
+
+# ---------------------------------------------------------------------------
+# Área de trabalho da migração
+# ---------------------------------------------------------------------------
+# REGRA IMPORTANTE aprendida na migração manual: trabalhe numa pasta IRMÃ,
+# NUNCA dentro do diretório com UUID que o oVirt gerencia — mexer lá corrompe
+# os metadados do storage domain.
+migracao_workdir: /mnt/sd1/migracao
+
+# Diretório de trabalho da VM em migração. Compartilhado pelas roles extract,
+# fix_network e upload — definido UMA vez aqui em vez de repetido nos defaults
+# de cada role. Depende de `vm`, resolvida em tempo de execução.
+vm_workdir: "{{ migracao_workdir }}/{{ vm.name }}"
+
+# Host do inventário para onde todas as roles delegam execução.
+olvm_host: olvm-host-01
+
+# ---------------------------------------------------------------------------
+# Mapa firmware (VMware) -> bios_type (oVirt)
+#
+# Valores válidos de bios_type na coleção ovirt.ovirt 3.x (verificados no
+# fonte do módulo): i440fx_sea_bios, q35_ovmf, q35_sea_bios, q35_secure_boot.
+#
+# Como descobrir o firmware da VM de origem: `grep -i firmware` no .vmx.
+# Saída VAZIA significa BIOS (o VMware só escreve a linha quando é EFI).
+# O playbook precheck.yml faz isso por você.
+# ---------------------------------------------------------------------------
+ovirt_bios_type_map:
+  bios: q35_sea_bios
+  uefi: q35_ovmf
+
+# Firmware assumido quando a VM não declara nada em vars/vms.yml.
+default_firmware: bios
+
+# ---------------------------------------------------------------------------
+# Comportamento dos playbooks
+# ---------------------------------------------------------------------------
+# Apagar os .vmdk depois de converter para qcow2 (libera disco no NFS).
+# Mantenha false até validar a VM migrada — o vmdk é seu rollback.
+extract_remove_vmdk_after_convert: false
+
+# Corrigir a rede offline com virt-customize antes de subir a VM.
+fix_network_enabled: true
+
+# Estado da VM após a criação no oVirt.
+#   present -> criada e desligada (recomendado: você valida antes de ligar)
+#   running -> criada e ligada
+vm_state_after_create: present
+
+# ---------------------------------------------------------------------------
+# Guarda de segurança
+# Nomes que NUNCA podem ser migrados automaticamente. O Jenkins roda dentro
+# de uma dessas VMs: migrá-la mataria o próprio pipeline no meio da execução.
+# ---------------------------------------------------------------------------
+guard_forbidden_names:
+  - jenkins

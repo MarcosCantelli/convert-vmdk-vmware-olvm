@@ -1,0 +1,166 @@
+---
+##############################################################################
+# tasks/migrate_one.yml — orquestra a migração de UMA VM.
+#
+# É o coração do projeto: os playbooks migrate-single.yml e migrate-batch.yml
+# apenas resolvem QUAL VM migrar e chamam este arquivo.
+#
+# Entrada: variável `vm` (dict no formato de vars/vms.yml)
+#
+# Sequência (a ordem não é negociável):
+#   1. guarda anti-Jenkins (defesa em profundidade)
+#   2. preflight: as ferramentas existem no host de virtualização?
+#   3. calcular alias e UUID determinístico de cada disco
+#   4. autenticar no engine
+#   5. extract     -> scp do ESXi + qemu-img convert
+#   6. fix_network -> virt-customize offline (antes de qualquer boot!)
+#   7. upload      -> ovirt-img upload-disk
+#   8. create_vm   -> VM + discos + NIC
+#   9. logout (sempre, mesmo em caso de falha)
+##############################################################################
+
+# ---------------------------------------------------------------------------
+# 1. Guarda anti-Jenkins
+# Os playbooks já checam isso, mas repetimos aqui: quem chamar este arquivo
+# por outro caminho continua protegido. A VM do Jenkins executa o pipeline —
+# migrá-la automaticamente derrubaria a própria execução no meio.
+# ---------------------------------------------------------------------------
+- name: "[migrate_one] GUARDA: recusar VMs com nome proibido"
+  ansible.builtin.assert:
+    that:
+      - item not in (vm.name | lower)
+    fail_msg: >-
+      ABORTADO: a VM '{{ vm.name }}' contém o termo proibido '{{ item }}'.
+      A VM do Jenkins executa este pipeline e não pode ser migrada por ele.
+      Migre-a manualmente, com o pipeline parado (veja docs/migration.md).
+    quiet: true
+  loop: "{{ guard_forbidden_names }}"
+
+# ---------------------------------------------------------------------------
+# 2. Preflight — falhar cedo e com mensagem clara é melhor do que falhar
+#    depois de 40 minutos de cópia.
+# ---------------------------------------------------------------------------
+- name: "[migrate_one] Preflight: conferir ferramentas no host de virtualização"
+  # `command -v` é builtin do shell — este é um dos casos em que shell é a
+  # ferramenta certa, e não um descuido. Preferimos a `which`, que pode não
+  # existir em instalações mínimas.
+  ansible.builtin.shell: # noqa: command-instead-of-shell
+    cmd: "command -v {{ item }}"
+  loop:
+    - qemu-img       # conversão VMDK -> qcow2
+    - ovirt-img      # upload para o storage domain
+    - virt-customize # ajuste de rede offline
+    - scp            # cópia a partir do ESXi
+  register: migrate_one_tools
+  changed_when: false
+  failed_when: migrate_one_tools.rc != 0
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[migrate_one] Preflight: conferir o SDK Python do oVirt"
+  # Os módulos ovirt.ovirt exigem o SDK no host que os executa.
+  # Instalação: dnf install python3-ovirt-engine-sdk4
+  ansible.builtin.command:
+    cmd: "python3 -c 'import ovirtsdk4'"
+  register: migrate_one_sdk
+  changed_when: false
+  failed_when: migrate_one_sdk.rc != 0
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[migrate_one] Preflight: conferir a área de trabalho no NFS"
+  ansible.builtin.stat:
+    path: "{{ migracao_workdir | dirname }}"
+  register: migrate_one_nfs
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[migrate_one] Abortar se o NFS não está montado"
+  ansible.builtin.assert:
+    that: migrate_one_nfs.stat.exists and migrate_one_nfs.stat.isdir
+    fail_msg: >-
+      {{ migracao_workdir | dirname }} não existe no host {{ olvm_host }}.
+      O NFS de 2 TB precisa estar montado antes de migrar.
+    quiet: true
+
+# ---------------------------------------------------------------------------
+# 3. Lista de discos com alias e UUID determinístico
+#
+# O UUID vem de `to_uuid` (UUID v5): a mesma entrada gera sempre o mesmo UUID.
+# Isso permite enviar o disco com --disk-id conhecido e depois anexá-lo por ID,
+# sem depender de busca por nome (que seria ambígua se dois aliases batessem).
+#
+# O `set_fact` da lista vazia ANTES do loop é essencial: fatos persistem entre
+# iterações, e numa migração em lote a segunda VM herdaria os discos da
+# primeira — anexando disco errado na VM errada.
+# ---------------------------------------------------------------------------
+- name: "[migrate_one] Zerar a lista de discos (evita vazamento entre VMs)"
+  ansible.builtin.set_fact:
+    vm_disk_items: []
+
+- name: "[migrate_one] Calcular alias, UUID e flag de boot de cada disco"
+  ansible.builtin.set_fact:
+    vm_disk_items: >-
+      {{ vm_disk_items + [{
+           'disk': item,
+           'alias': (item if item == vm.name else vm.name ~ '_' ~ item),
+           'id': (vm.name ~ '/' ~ item) | to_uuid,
+           'path': migracao_workdir ~ '/' ~ vm.name ~ '/' ~ item ~ '.qcow2',
+           'bootable': (item == (vm.disks | first))
+         }] }}
+  loop: "{{ vm.disks }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "[migrate_one] Anunciar o início da migração"
+  ansible.builtin.debug:
+    msg:
+      - "=== Migrando '{{ vm.name }}' ==="
+      - "Origem:  {{ esxi_host }}:{{ esxi_datastore_path }}/{{ vm.esxi_folder | default(vm.name) }}"
+      - "Destino: cluster {{ ovirt_cluster }} / storage {{ vm.storage_domain | default(ovirt_storage_domain) }}"
+      - "Discos:  {{ vm.disks | join(', ') }} (boot: {{ vm.disks | first }})"
+      - "Firmware: {{ vm.firmware | default(default_firmware) }}"
+
+# ---------------------------------------------------------------------------
+# 4..9 — bloco protegido: o logout acontece mesmo se algo falhar no meio,
+# para não deixar sessão pendurada no engine.
+# ---------------------------------------------------------------------------
+- name: "[migrate_one] Pipeline de migração"
+  block:
+
+    - name: "[migrate_one] Autenticar no engine OLVM"
+      ovirt.ovirt.ovirt_auth:
+        url: "{{ ovirt_engine_api_url }}"
+        username: "{{ ovirt_username }}"
+        password: "{{ ovirt_password }}"
+        insecure: "{{ ovirt_insecure }}"
+        ca_file: "{{ ovirt_ca_file | default(omit, true) }}"
+        state: present
+      delegate_to: "{{ olvm_host }}"
+      no_log: true
+
+    - name: "[migrate_one] Etapa 1/4 — extrair e converter os discos"
+      ansible.builtin.include_role:
+        name: extract
+
+    - name: "[migrate_one] Etapa 2/4 — corrigir a rede offline no qcow2"
+      ansible.builtin.include_role:
+        name: fix_network
+      when:
+        - fix_network_enabled | bool
+        - vm.fix_network | default(true) | bool
+
+    - name: "[migrate_one] Etapa 3/4 — enviar os discos ao storage domain"
+      ansible.builtin.include_role:
+        name: upload
+
+    - name: "[migrate_one] Etapa 4/4 — criar a VM, anexar discos e NIC"
+      ansible.builtin.include_role:
+        name: create_vm
+
+  always:
+    - name: "[migrate_one] Encerrar a sessão no engine"
+      ovirt.ovirt.ovirt_auth:
+        state: absent
+        ovirt_auth: "{{ ovirt_auth }}"
+      when: ovirt_auth is defined
+      delegate_to: "{{ olvm_host }}"
+      no_log: true

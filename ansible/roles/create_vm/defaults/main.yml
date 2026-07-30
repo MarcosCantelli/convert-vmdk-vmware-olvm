@@ -1,0 +1,41 @@
+---
+##############################################################################
+# roles/create_vm/defaults/main.yml
+##############################################################################
+
+# Firmware da VM: vem de vars/vms.yml, com fallback no default global.
+create_vm_firmware: "{{ vm.firmware | default(default_firmware) }}"
+
+# Tradução firmware -> bios_type do oVirt (mapa em group_vars/all.yml).
+create_vm_bios_type: "{{ ovirt_bios_type_map[create_vm_firmware] }}"
+
+# Hardware. Os defaults são conservadores; defina por VM em vars/vms.yml.
+create_vm_cpu_sockets: "{{ vm.cpu_sockets | default(1) }}"
+create_vm_cpu_cores: "{{ vm.cpu_cores | default(2) }}"
+create_vm_cpu_threads: "{{ vm.cpu_threads | default(1) }}"
+create_vm_memory_gib: "{{ vm.memory_gib | default(4) }}"
+
+# Tipo de VM no oVirt: server | desktop | high_performance
+create_vm_type: "{{ vm.vm_type | default('server') }}"
+
+# ID de sistema operacional do oVirt (ex.: rhel_9x64, ubuntu_22_04).
+# Vazio = deixa o engine decidir (fica "Other OS").
+create_vm_operating_system: "{{ vm.operating_system | default('') }}"
+
+# Storage domain de destino.
+create_vm_storage_domain: "{{ vm.storage_domain | default(ovirt_storage_domain) }}"
+
+# Interface do DISCO, com override por VM.
+# IMPORTANTE PARA WINDOWS: uma VM Windows vinda do VMware não tem os drivers
+# virtio instalados. Se o disco de boot for anexado como virtio_scsi, ela dá
+# INACCESSIBLE_BOOT_DEVICE. Use `disk_interface: sata` na VM em vars/vms.yml
+# para o primeiro boot, instale os drivers virtio-win e só então troque.
+create_vm_disk_interface: "{{ vm.disk_interface | default(ovirt_disk_interface) }}"
+
+# Interface da REDE, com override por VM.
+# Mesma lógica: Windows sem driver virtio não enxerga a placa virtio.
+# Use `nic_interface: e1000` até instalar os drivers.
+create_vm_nic_interface: "{{ vm.nic_interface | default(ovirt_nic_interface) }}"
+
+# Tempo máximo de espera pelas operações do engine (segundos).
+create_vm_timeout: 600

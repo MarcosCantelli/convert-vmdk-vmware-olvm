@@ -1,0 +1,104 @@
+---
+##############################################################################
+# migrate-single.yml — migra UMA VM do ESXi para o OLVM.
+#
+# Uso típico (VM já descrita em vars/vms.yml):
+#   ansible-playbook migrate-single.yml \
+#     -e vm_name=exemplo-linux-01 \
+#     --vault-password-file ~/.vault-pass
+#
+# Uso com definição na linha de comando (é assim que o Jenkins chama, quando
+# a VM não está em vars/vms.yml):
+#   ansible-playbook migrate-single.yml \
+#     -e vm_name=nova-vm \
+#     -e '{"vm_override": {"name":"nova-vm","disks":["nova-vm"],
+#          "firmware":"bios","cpu_sockets":1,"cpu_cores":2,"memory_gib":4}}' \
+#     --vault-password-file $VAULT_PASS_FILE
+#
+# Pré-requisito: group_vars/vault.yml criado e criptografado
+#   cp group_vars/vault.yml.example group_vars/vault.yml
+#   ansible-vault encrypt group_vars/vault.yml
+##############################################################################
+
+- name: "Migrar uma VM do vCenter/ESXi para o OLVM"
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    # Carregado EXPLICITAMENTE: um arquivo group_vars/vault.yml só seria
+    # automático se existisse um grupo chamado "vault" no inventário.
+    # Deixar visível aqui é melhor do que mágica implícita.
+    - group_vars/vault.yml
+    - vars/vms.yml
+
+  pre_tasks:
+
+    - name: "Exigir o parâmetro vm_name"
+      ansible.builtin.assert:
+        that: vm_name is defined and (vm_name | length) > 0
+        fail_msg: "Informe a VM: -e vm_name=<nome>"
+        quiet: true
+
+    # ---------------------------------------------------------------------
+    # GUARDA ANTI-JENKINS
+    # A VM do Jenkins executa este pipeline. Migrá-la automaticamente
+    # significaria desligar a máquina que está rodando o playbook, no meio da
+    # execução, deixando disco meio copiado e VM meio criada.
+    # Esta checagem vem ANTES de qualquer coisa, de propósito.
+    # ---------------------------------------------------------------------
+    - name: "GUARDA: recusar nomes proibidos ({{ guard_forbidden_names | join(', ') }})"
+      ansible.builtin.assert:
+        that:
+          - item not in (vm_name | lower)
+        fail_msg: >-
+          ABORTADO: '{{ vm_name }}' contém o termo proibido '{{ item }}'.
+          A VM do Jenkins não pode ser migrada por este pipeline — ela o está
+          executando. Migre-a manualmente com o pipeline parado
+          (procedimento em docs/migration.md).
+        quiet: true
+      loop: "{{ guard_forbidden_names }}"
+
+    - name: "Confirmar que a senha do engine veio do vault"
+      ansible.builtin.assert:
+        that:
+          - vault_ovirt_password is defined
+          - vault_ovirt_password != "TROQUE-PELA-SENHA-DO-ENGINE"
+        fail_msg: >-
+          vault_ovirt_password não foi definido ou continua com o valor de
+          exemplo. Crie group_vars/vault.yml a partir do .example, preencha e
+          rode `ansible-vault encrypt group_vars/vault.yml`.
+        quiet: true
+
+    # ---------------------------------------------------------------------
+    # Resolução da VM: primeiro procuramos em vars/vms.yml; se não estiver
+    # lá, usamos a definição passada em vm_override (caminho do Jenkins).
+    # ---------------------------------------------------------------------
+    - name: "Procurar a VM em vars/vms.yml"
+      ansible.builtin.set_fact:
+        vm_from_list: "{{ vms | default([]) | selectattr('name', 'equalto', vm_name) | list }}"
+
+    - name: "Definir a VM a migrar"
+      ansible.builtin.set_fact:
+        vm: "{{ vm_from_list[0] if (vm_from_list | length) > 0 else (vm_override | default({})) }}"
+
+    - name: "Validar a definição da VM"
+      ansible.builtin.assert:
+        that:
+          - vm.name is defined
+          - vm.disks is defined
+          - vm.disks | length > 0
+        fail_msg: >-
+          '{{ vm_name }}' não está em vars/vms.yml e nenhum vm_override válido
+          foi passado. Um vm_override precisa ter ao menos `name` e `disks`.
+        quiet: true
+
+    - name: "Informar a origem da definição"
+      ansible.builtin.debug:
+        msg: >-
+          Definição de '{{ vm_name }}' obtida de
+          {{ 'vars/vms.yml' if (vm_from_list | length) > 0 else 'vm_override (linha de comando)' }}.
+
+  tasks:
+
+    - name: "Executar a migração"
+      ansible.builtin.include_tasks: tasks/migrate_one.yml

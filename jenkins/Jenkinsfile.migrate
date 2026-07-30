@@ -1,0 +1,242 @@
+// ============================================================================
+// Jenkinsfile.migrate — pipeline de MIGRAÇÃO de VM (vCenter/ESXi -> OLVM)
+//
+// O que faz:
+//   1. valida os parâmetros e aplica a guarda anti-Jenkins
+//   2. instala as coleções Ansible do requirements.yml
+//   3. (opcional) roda o precheck no ESXi para descobrir firmware/SO
+//   4. executa o migrate-single.yml
+//
+// CREDENCIAIS que precisam existir no Jenkins (Manage Jenkins > Credentials):
+//   * ansible-vault-password  (tipo "Secret file")
+//       arquivo texto com a senha do Ansible Vault, em uma única linha
+//   * olvm-ssh-key            (tipo "SSH Username with private key")
+//       chave para acessar o host de virtualização 192.168.31.11 (e o ESXi)
+//
+// Nenhum segredo aparece neste arquivo — é isso que permite o repo ser público.
+//
+// REQUISITOS no agente Jenkins:
+//   ansible-core, ansible-galaxy, ssh
+//   /etc/hosts com "192.168.31.9 olvm.mvrc.local" (o roteador não encaminha a
+//   zona mvrc.local do BIND9)
+// ============================================================================
+
+pipeline {
+
+  agent any
+
+  options {
+    // Migração é longa (cópia + conversão + upload de disco).
+    timeout(time: 8, unit: 'HOURS')
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+
+  parameters {
+    string(
+      name: 'VM_NAME',
+      defaultValue: '',
+      description: 'Nome da VM a migrar. Se já estiver em ansible/vars/vms.yml, os campos abaixo são ignorados.'
+    )
+    string(
+      name: 'ESXI_FOLDER',
+      defaultValue: '',
+      description: 'Pasta da VM dentro do datastore. Vazio = mesmo nome da VM.'
+    )
+    string(
+      name: 'ESXI_DATASTORE',
+      defaultValue: 'VS2_HD2_1TB',
+      description: 'Datastore de origem no ESXi.'
+    )
+    string(
+      name: 'DISKS',
+      defaultValue: '',
+      description: 'Discos separados por vírgula, SEM extensão (ex.: "srv01,srv01-dados"). Vazio = usa o nome da VM.'
+    )
+    choice(
+      name: 'FIRMWARE',
+      choices: ['bios', 'uefi'],
+      description: 'Firmware da VM de origem. Descubra com o precheck (grep firmware no .vmx; vazio = bios).'
+    )
+    string(name: 'CPU_SOCKETS', defaultValue: '1', description: 'Sockets de CPU.')
+    string(name: 'CPU_CORES',   defaultValue: '2', description: 'Cores por socket.')
+    string(name: 'MEMORY_GIB',  defaultValue: '4', description: 'Memória em GiB.')
+    string(
+      name: 'OPERATING_SYSTEM',
+      defaultValue: 'other_linux',
+      description: 'ID do SO no oVirt (ex.: rhel_9x64, ubuntu_22_04). Confirme os válidos no seu engine.'
+    )
+    string(
+      name: 'STORAGE_DOMAIN',
+      defaultValue: 'hosted_storage',
+      description: 'Storage domain de destino.'
+    )
+    booleanParam(
+      name: 'FIX_NETWORK',
+      defaultValue: true,
+      description: 'Corrigir a rede offline com virt-customize (recomendado: sem isso a VM Linux sobe sem rede).'
+    )
+    booleanParam(
+      name: 'RUN_PRECHECK',
+      defaultValue: true,
+      description: 'Rodar o precheck no ESXi antes de migrar (somente leitura).'
+    )
+  }
+
+  environment {
+    ANSIBLE_DIR = 'ansible'
+    // Caminho local das coleções instaladas nesta execução.
+    ANSIBLE_COLLECTIONS_PATH = "${WORKSPACE}/ansible/collections"
+    // Evita erro de cor/buffer em log de CI.
+    ANSIBLE_FORCE_COLOR = '1'
+    PY_COLORS = '1'
+  }
+
+  stages {
+
+    // ----------------------------------------------------------------------
+    // A guarda anti-Jenkins é o PRIMEIRO estágio, de propósito: antes de
+    // clonar, instalar coleção ou tocar em disco. A VM do Jenkins executa
+    // este pipeline — migrá-la derrubaria a própria execução no meio.
+    // O playbook Ansible tem a mesma checagem (defesa em profundidade).
+    // ----------------------------------------------------------------------
+    stage('Guarda anti-Jenkins') {
+      steps {
+        script {
+          def nome = params.VM_NAME?.trim()
+
+          if (!nome) {
+            error('VM_NAME é obrigatório.')
+          }
+          if (nome.toLowerCase().contains('jenkins')) {
+            error("""
+              ABORTADO: '${nome}' contém 'jenkins'.
+              A VM do Jenkins executa este pipeline e não pode ser migrada por ele.
+              Migre-a manualmente, com o pipeline parado — procedimento em docs/migration.md.
+            """.stripIndent())
+          }
+          if (!(nome ==~ /^[A-Za-z0-9._-]+$/)) {
+            error("Nome inválido: '${nome}'. O oVirt aceita apenas letras, números, ponto, hífen e underscore.")
+          }
+
+          currentBuild.displayName = "#${BUILD_NUMBER} migrar ${nome}"
+          currentBuild.description = "firmware=${params.FIRMWARE}, ${params.CPU_SOCKETS}x${params.CPU_CORES} vCPU, ${params.MEMORY_GIB} GiB"
+        }
+      }
+    }
+
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Instalar coleções Ansible') {
+      steps {
+        dir("${env.ANSIBLE_DIR}") {
+          // -p aponta para o workspace: cada build usa a sua própria cópia,
+          // sem depender do que existe no agente.
+          sh '''
+            set -eu
+            ansible --version
+            ansible-galaxy collection install -r requirements.yml -p collections --force
+          '''
+        }
+      }
+    }
+
+    stage('Precheck no ESXi') {
+      when { expression { params.RUN_PRECHECK } }
+      steps {
+        dir("${env.ANSIBLE_DIR}") {
+          sshagent(credentials: ['olvm-ssh-key']) {
+            // Somente leitura: lê o .vmx e lista os .vmdk.
+            sh """
+              set -eu
+              ansible-playbook precheck.yml \
+                -e vm_name='${params.VM_NAME}' \
+                -e esxi_datastore='${params.ESXI_DATASTORE}'
+            """
+          }
+        }
+      }
+    }
+
+    stage('Migrar') {
+      steps {
+        dir("${env.ANSIBLE_DIR}") {
+          // A senha do vault vem de uma credential do tipo Secret file: o
+          // Jenkins materializa um arquivo temporário e apaga ao fim do bloco.
+          withCredentials([file(credentialsId: 'ansible-vault-password', variable: 'VAULT_PASS_FILE')]) {
+            sshagent(credentials: ['olvm-ssh-key']) {
+              script {
+                // Monta o vm_override em JSON com os parâmetros do build.
+                // Se a VM já estiver em vars/vms.yml, o playbook prefere a
+                // definição do arquivo e ignora isto.
+                def discos = (params.DISKS?.trim()
+                              ? params.DISKS.split(',').collect { it.trim() }.findAll { it }
+                              : [params.VM_NAME.trim()])
+
+                def override = groovy.json.JsonOutput.toJson([
+                  vm_override: [
+                    name             : params.VM_NAME.trim(),
+                    esxi_folder      : (params.ESXI_FOLDER?.trim() ?: params.VM_NAME.trim()),
+                    disks            : discos,
+                    firmware         : params.FIRMWARE,
+                    operating_system : params.OPERATING_SYSTEM,
+                    cpu_sockets      : params.CPU_SOCKETS as Integer,
+                    cpu_cores        : params.CPU_CORES as Integer,
+                    cpu_threads      : 1,
+                    memory_gib       : params.MEMORY_GIB as Integer,
+                    storage_domain   : params.STORAGE_DOMAIN,
+                    fix_network      : params.FIX_NETWORK
+                  ]
+                ])
+
+                writeFile file: 'vm_override.json', text: override
+                echo "Definição da VM enviada ao playbook:\n${override}"
+
+                sh """
+                  set -eu
+                  ansible-playbook migrate-single.yml \
+                    -e vm_name='${params.VM_NAME.trim()}' \
+                    -e esxi_datastore='${params.ESXI_DATASTORE}' \
+                    -e @vm_override.json \
+                    --vault-password-file "\$VAULT_PASS_FILE"
+                """
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      // O JSON não tem segredo, mas não há motivo para guardá-lo.
+      sh 'rm -f ansible/vm_override.json || true'
+    }
+    success {
+      echo """
+        Migração de '${params.VM_NAME}' concluída.
+        A VM foi criada DESLIGADA (padrão vm_state_after_create=present).
+        Próximos passos:
+          1. ligar a VM no OLVM e conferir se pegou IP por DHCP
+          2. validar aplicação e dados
+          3. só então desligar a VM original no ESXi
+          4. aplicar a configuração de rede definitiva via Ansible
+      """.stripIndent()
+    }
+    failure {
+      echo """
+        Migração de '${params.VM_NAME}' FALHOU.
+        Os artefatos parciais ficam em /mnt/sd1/migracao/${params.VM_NAME} no host
+        de virtualização. O pipeline é idempotente: ao reexecutar, o que já foi
+        copiado/convertido/enviado é reaproveitado.
+        Consulte docs/migration.md na seção de problemas conhecidos.
+      """.stripIndent()
+    }
+  }
+}

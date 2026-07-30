@@ -1,0 +1,66 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+# ---------------------------------------------------------------------------
+# Netplan de migração — gerado pela role fix_network
+# VM: {{ vm.name }}
+# Modo: {{ 'IP FIXO preservado' if fix_network_static else 'DHCP (nenhum IP fixo encontrado)' }}
+#
+# Por que este arquivo existe: ao sair do VMware para o KVM/oVirt o nome da
+# interface MUDA (ex.: ens160 -> enp1s0). A configuração antiga aponta para um
+# nome que não existe mais, a VM sobe SEM REDE, e sem rede o Ansible não entra
+# para consertar. Fica um impasse, e a saída é escrever isto OFFLINE, com a VM
+# desligada, antes do primeiro boot.
+#
+# A chave do truque é o `match: name: "en*"`: em vez de nomear a interface,
+# casamos com QUALQUER nome que comece com "en". Funciona sem sabermos de
+# antemão qual nome o KVM vai atribuir.
+#
+# O prefixo 99 garante que este arquivo seja o ÚLTIMO lido, vencendo qualquer
+# configuração anterior que ainda nomeie a interface do VMware.
+{% if fix_network_static %}
+#
+# Os valores abaixo foram LIDOS da própria imagem (virt-cat em /etc/netplan),
+# não digitados: o IP fixo que a VM já usava é preservado.
+{% endif %}
+# ---------------------------------------------------------------------------
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    migracao-net:
+      match:
+        name: "{{ fix_network_match_glob }}"
+{% if fix_network_static %}
+      dhcp4: false
+      dhcp6: false
+      addresses:
+{% for endereco in fix_network_static.addresses %}
+        - {{ endereco }}
+{% endfor %}
+{% if fix_network_static.routes is defined %}
+      routes:
+{% for rota in fix_network_static.routes %}
+        - to: {{ rota.to | default('default') }}
+          via: {{ rota.via }}
+{% endfor %}
+{% elif fix_network_static.gateway4 is defined %}
+      # convertido do `gateway4`, que o netplan atual considera descontinuado
+      routes:
+        - to: default
+          via: {{ fix_network_static.gateway4 }}
+{% endif %}
+{% if fix_network_static.nameservers is defined %}
+      nameservers:
+{% if fix_network_static.nameservers.addresses is defined %}
+        addresses: {{ fix_network_static.nameservers.addresses | to_json }}
+{% endif %}
+{% if fix_network_static.nameservers.search is defined %}
+        search: {{ fix_network_static.nameservers.search | to_json }}
+{% endif %}
+{% endif %}
+{% else %}
+      dhcp4: true
+      dhcp6: false
+      # optional: true evita que o boot fique preso em "waiting for network"
+      # por até 2 minutos caso o DHCP não responda.
+      optional: true
+{% endif %}

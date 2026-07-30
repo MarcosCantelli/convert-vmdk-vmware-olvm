@@ -1,0 +1,25 @@
+##############################################################################
+# requirements.yml — dependências de coleções Ansible.
+#
+# Instalação (o Jenkins faz isso automaticamente numa etapa do pipeline):
+#   ansible-galaxy collection install -r requirements.yml -p collections
+#
+# Versões PINADAS por faixa: pegamos correções de bug (patch/minor) mas nunca
+# uma major nova, que poderia trocar nomes de parâmetros sem aviso.
+##############################################################################
+
+collections:
+  # Coleção oficial do oVirt/OLVM: módulos ovirt_auth, ovirt_vm, ovirt_disk,
+  # ovirt_nic, ovirt_*_info. Última versão verificada no Galaxy: 3.2.2.
+  # Requer o SDK Python no host que executa o módulo:
+  #   dnf install python3-ovirt-engine-sdk4
+  - name: ovirt.ovirt
+    version: ">=3.2.0,<4.0.0"
+
+  # Utilidades gerais (filtros, módulos auxiliares).
+  - name: community.general
+    version: ">=8.0.0"
+
+  # Módulos POSIX (ex.: mount, sysctl, synchronize).
+  - name: ansible.posix
+    version: ">=1.5.0"

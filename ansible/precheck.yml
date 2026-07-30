@@ -1,0 +1,140 @@
+---
+##############################################################################
+# precheck.yml — descobre no ESXi o que a migração precisa saber ANTES de
+# mexer em qualquer coisa: firmware, sistema operacional, CPU, memória e os
+# nomes reais dos arquivos .vmdk.
+#
+# Por que isso importa: o FIRMWARE decide se a VM vai bootar no OLVM. BIOS e
+# UEFI não são intercambiáveis — com o firmware errado a VM liga e não acha o
+# disco de boot.
+#
+# COMO LER O RESULTADO:
+#   linha "firmware = efi"  -> a VM é UEFI  -> firmware: uefi  (q35_ovmf)
+#   NENHUMA linha firmware  -> a VM é BIOS  -> firmware: bios  (q35_sea_bios)
+# O VMware só escreve essa linha quando é EFI. Saída vazia é resposta, não erro.
+#
+# Este playbook é SOMENTE LEITURA: nada é alterado no ESXi.
+#
+# Uso:
+#   # todas as VMs de vars/vms.yml
+#   ansible-playbook precheck.yml
+#   # uma VM específica
+#   ansible-playbook precheck.yml -e vm_name=App-Server-HO
+#
+# NÃO precisa do vault: só lê o ESXi, não fala com o engine.
+#
+# COMO CONECTA: os comandos rodam no host de virtualização (192.168.31.11), que
+# faz ssh no ESXi. Você não precisa de chave SSH do seu PC para o ESXi — só a
+# do 31.11, que é a mesma que a migração usa.
+##############################################################################
+
+- name: "Precheck no ESXi de origem"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/vms.yml
+
+  tasks:
+
+    - name: "[precheck] Alvo: apenas a VM informada em -e vm_name=..."
+      ansible.builtin.set_fact:
+        precheck_targets: "{{ [{'name': vm_name}] }}"
+      when: vm_name is defined
+
+    - name: "[precheck] Alvo: todas as VMs de vars/vms.yml"
+      ansible.builtin.set_fact:
+        precheck_targets: "{{ vms }}"
+      when: vm_name is not defined
+
+    - name: "[precheck] Conferir o acesso SSH do host de virtualização ao ESXi"
+      # Falhar aqui, com mensagem clara, é muito melhor do que falhar em cada
+      # uma das consultas seguintes sem explicar o motivo.
+      ansible.builtin.command:
+        cmd: "{{ esxi_ssh_cmd }} 'echo ok'"
+      register: precheck_ssh
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[precheck] Abortar se o ESXi não aceita a chave SSH"
+      ansible.builtin.assert:
+        that: precheck_ssh.rc == 0
+        fail_msg: >-
+          O host {{ olvm_host }} não conseguiu entrar por SSH no ESXi
+          ({{ esxi_user }}@{{ esxi_host }}).
+          Erro: {{ precheck_ssh.stderr | default('') | trim }}
+          No ESXi a chave do root vai em /etc/ssh/keys-root/authorized_keys
+          (NÃO em ~/.ssh/authorized_keys) e o serviço TSM-SSH precisa estar
+          ligado. Passo a passo em docs/migration.md, seção 1.
+        quiet: true
+
+    - name: "[precheck] Localizar o .vmx de cada VM no datastore"
+      # O diretório vai entre aspas simples (pastas de VM do VMware costumam ter
+      # espaço no nome) e o glob *.vmx fica FORA delas, para o shell expandir.
+      ansible.builtin.shell:
+        cmd: >-
+          {{ esxi_ssh_cmd }}
+          "ls -1 '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
+      loop: "{{ precheck_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: precheck_vmx
+      changed_when: false
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[precheck] Ler as linhas relevantes do .vmx"
+      # Um único grep traz tudo que interessa:
+      #   firmware    -> BIOS vs UEFI (ausente = BIOS)
+      #   guestOS     -> pista do sistema operacional
+      #   numvcpus / cpuid.coresPerSocket / memSize -> hardware
+      #   displayName -> nome que a VM tinha no vCenter
+      #
+      # Vários `-e` em vez de um regex com alternação (a|b|c) de propósito: o
+      # mesmo resultado, sem o caractere "|" no comando — que o ansible-lint
+      # confundiria com um pipe de shell sem pipefail.
+      ansible.builtin.shell:
+        cmd: >-
+          {{ esxi_ssh_cmd }}
+          "grep -i -e '^firmware' -e '^guestOS' -e '^numvcpus'
+          -e '^cpuid.coresPerSocket' -e '^memSize' -e '^displayName'
+          '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
+      loop: "{{ precheck_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: precheck_vmx_info
+      changed_when: false
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[precheck] Listar os arquivos .vmdk (descritores e dados)"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ esxi_ssh_cmd }}
+          "ls -lh '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmdk 2>/dev/null || true"
+      loop: "{{ precheck_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: precheck_vmdk
+      changed_when: false
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[precheck] RELATÓRIO"
+      ansible.builtin.debug:
+        msg:
+          - "===== {{ item.0.item.name }} ====="
+          - "Origem: [{{ item.0.item.esxi_datastore | default(esxi_datastore) }}] {{ item.0.item.esxi_folder | default(item.0.item.name) }}"
+          - "Arquivo .vmx encontrado: {{ 'SIM' if (item.0.stdout | trim | length) > 0 else 'NAO — confira o nome da pasta!' }}"
+          - "Configuração lida do .vmx:"
+          - "{{ item.1.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list }}"
+          - >-
+            FIRMWARE DETECTADO:
+            {{ 'uefi  -> use firmware: uefi  (bios_type q35_ovmf)'
+               if (item.1.stdout | default('') | lower is search('firmware'))
+               else 'bios  -> use firmware: bios  (bios_type q35_sea_bios)' }}
+          - "Arquivos de disco:"
+          - "{{ item.2.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list }}"
+          - >-
+            LEMBRETE: cada disco são DOIS arquivos (nome.vmdk + nome-flat.vmdk).
+            Em vars/vms.yml liste apenas o nome base, sem extensão e sem sufixo.
+      loop: "{{ precheck_vmx.results | zip(precheck_vmx_info.results, precheck_vmdk.results) | list }}"
+      loop_control:
+        label: "{{ item.0.item.name }}"
