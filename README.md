@@ -222,18 +222,33 @@ Os Jenkinsfiles **não** foram validados: exigem um controlador Jenkins para
 `curl -X POST -F "jenkinsfile=<jenkins/Jenkinsfile.migrate" $JENKINS_URL/pipeline-model-converter/validate`
 no seu controlador antes de confiar neles.
 
-**Precisa ser testado contra o ambiente real** — não tenho acesso ao OLVM:
+### Migração validada de ponta a ponta
 
-- autenticação do usuário Keycloak `admin@ovirt@internalsso` pelo SDK (Ansible) e
-  pelo provider (Terraform)
-- IDs de `operating_system` / `os_type` válidos na sua versão do engine
-  (`other_linux`, `rhel_9x64`, `ubuntu_22_04`… a lista varia)
-- comportamento do `--insecure` do `ovirt-img` contra o certificado sem SAN
-- se o `virt-customize` reconhece o SO de cada qcow2 convertido
-- o ajuste opcional de firmware via API REST (`firmware_apply_via_api`), que vem
-  desligado por padrão
-- o sufixo do arquivo de dados dos seus discos (assumido `-flat`; layouts thin
-  podem usar `-sparse` ou `-s001`)
+A `App-Server-HO` (Ubuntu 24.04, 20 GB) foi migrada com sucesso pelo
+`migrate-single.yml`, confirmando no ambiente real:
+
+- autenticação do usuário Keycloak `admin@ovirt@internalsso` pelo SDK
+- `--insecure` do `ovirt-img` contra o certificado sem SAN
+- `virt-customize` reconhecendo o convidado e injetando o netplan offline
+- o sufixo `-flat` no arquivo de dados dos discos
+- `bios_type: q35_sea_bios` e `operating_system: other_linux` aceitos pelo engine
+- idempotência: reexecuções pulam cópia, conversão e ajuste de rede já feitos
+
+O caminho encontrou seis defeitos que só aparecem contra o ambiente real —
+ESXi 6.7 em modo FIPS recusando ed25519, dois datastores em vez de um, quebra
+de linha em bloco YAML dobrado, aspas viajando para dentro do `scp`,
+aninhamento de `item` num loop e `--description` inexistente no `ovirt-img` do
+OL8. Todos estão corrigidos e documentados, com o sintoma junto da causa.
+
+**Ainda não testado contra o ambiente real:**
+
+- **todo o fluxo do Terraform** contra o engine (o provisionamento nunca rodou
+  fora do modo mock)
+- o ajuste opcional de firmware via API REST (`firmware_apply_via_api`), que
+  vem desligado por padrão
+- os dois `Jenkinsfile` (precisam de um controlador Jenkins para o
+  Declarative Linter)
+- as VMs Windows, que estão comentadas em `vars/vms.yml` com os motivos
 
 **Placeholders a preencher:** UUIDs de cluster/storage domain/vNIC
 profile/template (`terraform.tfvars`), nome da rede lógica (assumido
