@@ -381,8 +381,9 @@ você valida antes de ligar. Para ligar automaticamente, mude para `running` em
    # Debian/Ubuntu: apt install -y qemu-guest-agent
    ```
 4. Remova o que é resquício do VMware (`open-vm-tools`).
-5. Aplique a configuração de rede **definitiva** (IP fixo etc.). O netplan
-   injetado é rede de segurança temporária, não configuração final.
+5. Aplique a configuração de rede **definitiva**. Veja
+   [Recuperando o IP fixo](#recuperando-o-ip-fixo) logo abaixo — a VM sobe em
+   DHCP de propósito, e isso não é o estado final.
 6. Valide aplicação e dados.
 7. **Só então** desligue a VM original no ESXi. Mantenha-a desligada alguns dias
    antes de remover — é o seu rollback.
@@ -392,6 +393,59 @@ você valida antes de ligar. Para ligar automaticamente, mude para `running` em
    ```
    (ou deixe `extract_remove_vmdk_after_convert: true` para apagar os `.vmdk`
    logo após a conversão — recomendo manter `false` até validar.)
+
+### Recuperando o IP fixo
+
+A VM migrada sobe em **DHCP**, e isso é intencional: o `99-migracao-netcfg.yaml`
+existe para ela não subir isolada quando o nome da interface muda. Não é o
+estado final.
+
+A boa notícia é que a configuração antiga **continua dentro da VM**. A role
+`fix_network` só remove `70-persistent-net.rules` e `50-cloud-init.yaml`; um
+`00-installer-config.yaml`, por exemplo, permanece intacto. Ele é ignorado
+porque nomeia `ens160`, que não existe mais no KVM — mas é ali que está o IP
+que a VM usava.
+
+Dentro da VM, com o console do OLVM:
+
+```bash
+# 1. descubra o endereço antigo e os dados da rede atual
+ls -la /etc/netplan/
+sudo cat /etc/netplan/*.yaml     # o arquivo antigo tem o IP fixo original
+ip r                             # gateway
+resolvectl status | grep -i 'dns servers'
+
+# 2. escreva a configuração definitiva, agora com o nome NOVO da interface
+sudo tee /etc/netplan/01-static.yaml >/dev/null <<'EOF'
+network:
+  version: 2
+  ethernets:
+    enp1s0:
+      dhcp4: false
+      addresses: [192.168.31.XXX/24]
+      routes:
+        - to: default
+          via: 192.168.31.1
+      nameservers:
+        addresses: [192.168.31.9]
+EOF
+sudo chmod 600 /etc/netplan/01-static.yaml
+
+# 3. remova a rede de segurança da migração e aplique
+sudo rm -f /etc/netplan/99-migracao-netcfg.yaml
+sudo netplan try                 # reverte sozinho em 120s se algo quebrar
+```
+
+Três detalhes:
+
+- **`netplan try` antes de `apply`.** Ele desfaz a mudança sozinho se você não
+  confirmar, o que salva a sessão quando a configuração está errada.
+- **`routes: - to: default`**, e não `gateway4`, que está descontinuado e gera
+  aviso nas versões atuais do netplan.
+- **Confira o que mais aponta para esse IP** antes de trocar: registro no
+  BIND9, entradas em `/etc/hosts` de outras máquinas, e a reserva de DHCP —
+  se houver uma reserva para o MAC antigo, ela não vale mais, porque a VM
+  ganhou MAC novo no oVirt.
 
 ## 8. O caso especial do Jenkins
 
