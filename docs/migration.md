@@ -258,11 +258,32 @@ cd ~/projetos/convert-vmdk-vmware-olvm/ansible     # o cd importa: os caminhos
                                                    # abaixo são relativos a ele
 cp group_vars/vault.yml.example group_vars/vault.yml
 $EDITOR group_vars/vault.yml          # preencha vault_ovirt_password
-ansible-vault encrypt group_vars/vault.yml
 
-# confirme que o git não vê o arquivo (deve imprimir o caminho e nada mais):
+# crie PRIMEIRO o arquivo com a senha do vault...
+echo 'senha-do-vault' > ~/.vault-pass && chmod 600 ~/.vault-pass
+
+# ...e criptografe usando ELE, não o prompt interativo
+ansible-vault encrypt --vault-password-file ~/.vault-pass group_vars/vault.yml
+
+# confirme que abre, sem imprimir o segredo na tela
+ansible-vault view --vault-password-file ~/.vault-pass group_vars/vault.yml > /dev/null && echo "vault OK"
+
+# confirme que o git não vê o arquivo (deve imprimir o caminho e nada mais)
 git check-ignore -v group_vars/vault.yml
 ```
+
+> **Criptografe com o `--vault-password-file`, não com o prompt.** São duas
+> senhas diferentes em jogo — a do *engine*, que vai **dentro** do arquivo, e a
+> do *vault*, que **abre** o arquivo. Digitar a segunda num prompt e depois
+> escrever outra coisa no `~/.vault-pass` gera:
+> ```
+> ERROR! Decryption failed (no vault secrets were found that could decrypt)
+> ```
+> Usando o mesmo arquivo nas duas pontas, não há como divergir.
+>
+> Se já aconteceu: `rm group_vars/vault.yml`, copie o `.example` de novo e
+> refaça com o comando acima. Ou, se você lembra a senha original,
+> `ansible-vault rekey --new-vault-password-file ~/.vault-pass group_vars/vault.yml`.
 
 Guarde a senha do vault num arquivo fora do repositório:
 
