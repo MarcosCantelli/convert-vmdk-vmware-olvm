@@ -1,57 +1,201 @@
 ##############################################################################
 # vars/vms.yml — inventário das VMs a migrar do vCenter/ESXi para o OLVM.
 #
-# Este arquivo é a "fila de trabalho": o migrate-batch.yml percorre a lista,
-# e o migrate-single.yml procura uma VM pelo nome (-e vm_name=...).
+# Fila de trabalho: migrate-batch.yml percorre a lista; migrate-single.yml
+# procura uma VM pelo nome (-e vm_name=...).
 #
 # Campos de cada VM:
 #   name              (obrigatório) nome final da VM no oVirt
 #   esxi_folder       pasta da VM dentro do datastore (default: = name)
-#   disks             (obrigatório) lista dos discos SEM extensão.
-#                     O primeiro da lista é tratado como disco de BOOT.
-#                     Ex.: para srv-web-01.vmdk + srv-web-01-flat.vmdk,
-#                     escreva apenas "srv-web-01".
-#   firmware          bios | uefi  (descubra com o playbook precheck.yml)
-#   operating_system  ID do SO no oVirt. VERIFIQUE os valores aceitos na sua
-#                     versão do engine (ovirt_vm_os_info / interface web),
-#                     ex.: rhel_9x64, ubuntu_22_04, other_linux, windows_2019x64
+#   disks             (obrigatório) discos SEM extensão; o PRIMEIRO é o de boot.
+#                     Para nome.vmdk + nome-flat.vmdk, escreva só "nome".
+#   firmware          bios | uefi  -> DESCUBRA COM precheck.yml
+#   operating_system  ID do SO no oVirt (veja a nota no fim do arquivo)
 #   cpu_sockets / cpu_cores / cpu_threads
 #   memory_gib        memória em GiB
-#   fix_network       true = roda virt-customize offline (recomendado p/ Linux)
+#   disk_interface    override; virtio_scsi (Linux) | sata (Windows sem virtio)
+#   nic_interface     override; virtio (Linux) | e1000 (Windows sem virtio)
+#   fix_network       true = virt-customize offline (só faz sentido em Linux)
 #   storage_domain    opcional, sobrescreve ovirt_storage_domain
 #
-# As entradas abaixo são EXEMPLOS com nomes fictícios. Troque pelas suas VMs
-# reais — não inventei nomes do seu ambiente.
+# ---------------------------------------------------------------------------
+# DUAS COISAS PARA CONFERIR ANTES DE RODAR EM CADA VM
+# ---------------------------------------------------------------------------
+# 1) FIRMWARE. Não aparece na aba "Virtual Hardware" do vCenter — está em
+#    VM Options > Boot Options. Os valores abaixo são SUPOSIÇÃO e o firmware
+#    errado faz a VM ligar sem achar o disco de boot. Confirme com:
+#       ansible-playbook precheck.yml
+#    (sem -e vm_name, ele roda em todas as VMs deste arquivo)
+#
+# 2) NOME DOS ARQUIVOS .vmdk e DA PASTA. Assumi que a pasta e o disco têm o
+#    mesmo nome da VM, que é o padrão do vCenter — mas VM renomeada mantém o
+#    nome ANTIGO nos arquivos. O precheck lista os .vmdk de verdade; se
+#    divergir, ajuste `esxi_folder` e `disks`.
 ##############################################################################
 
 vms:
-  - name: exemplo-linux-01
-    esxi_folder: exemplo-linux-01
+
+  # =========================================================================
+  # UBUNTU SERVER — prontas para migrar (confirme firmware e nomes de arquivo)
+  # =========================================================================
+
+  - name: App-Server-HO
     disks:
-      - exemplo-linux-01          # disco de boot
-    firmware: bios                # confirmado com precheck.yml (.vmx sem linha firmware)
-    operating_system: other_linux # VERIFICAR na sua versão do engine
+      - App-Server-HO
+    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    operating_system: other_linux
+    cpu_sockets: 1
+    cpu_cores: 2               # vCenter mostrava 2 vCPU
+    cpu_threads: 1
+    memory_gib: 4
+    fix_network: true
+
+  - name: App-Server-PRD
+    disks:
+      - App-Server-PRD
+    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    operating_system: other_linux
     cpu_sockets: 1
     cpu_cores: 2
     cpu_threads: 1
     memory_gib: 4
     fix_network: true
 
-  - name: exemplo-linux-02-uefi
-    esxi_folder: exemplo-linux-02-uefi
+  - name: MySQL-HO2
     disks:
-      - exemplo-linux-02-uefi     # disco de boot
-      - exemplo-linux-02-dados    # disco adicional (não recebe fix de rede)
-    firmware: uefi                # .vmx tinha firmware = "efi"
+      - MySQL-HO2
+    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
     operating_system: other_linux
-    cpu_sockets: 2
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    fix_network: true
+
+  - name: MySQL_HO
+    disks:
+      - MySQL_HO
+    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    operating_system: other_linux
+    cpu_sockets: 1
+    cpu_cores: 4               # vCenter mostrava 4 vCPU
+    cpu_threads: 1
+    memory_gib: 8
+    fix_network: true
+
+  - name: reiCar_TH
+    disks:
+      - reiCar_TH
+    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    operating_system: other_linux
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    fix_network: true
+
+  - name: reiCar_TH2
+    disks:
+      - reiCar_TH2
+    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    operating_system: other_linux
+    cpu_sockets: 1
     cpu_cores: 2
     cpu_threads: 1
     memory_gib: 8
     fix_network: true
 
-  # ATENÇÃO: a VM do Jenkins NÃO pode entrar nesta lista.
-  # Ela executa o próprio pipeline — migrá-la interromperia a execução no meio.
-  # Os playbooks têm guarda que aborta se "jenkins" aparecer no nome, mas a
-  # primeira linha de defesa é não colocar aqui. Migre-a manualmente, com o
-  # pipeline parado, seguindo docs/migration.md.
+  # =========================================================================
+  # WINDOWS — comentadas de propósito. NÃO descomente sem ler o porquê.
+  #
+  # (a) DRIVERS VIRTIO. Uma VM Windows que vem do VMware não tem driver
+  #     virtio. Se o disco de boot for anexado como virtio_scsi, o Windows
+  #     sobe e para em INACCESSIBLE_BOOT_DEVICE. Por isso as três abaixo têm
+  #     disk_interface: sata e nic_interface: e1000 — hardware que o Windows
+  #     reconhece nativamente. Depois do primeiro boot: instale o
+  #     virtio-win (ISO do Fedora/oVirt), e só então troque para virtio_scsi
+  #     e virtio, um de cada vez.
+  #
+  # (b) fix_network: false. A role fix_network injeta netplan, que é coisa de
+  #     Linux — em imagem Windows não serve para nada. A rede do Windows se
+  #     ajusta depois do boot, pelo console.
+  #
+  # (c) FIRMWARE. Windows Server 2019+ instalado em 2022/2025 costuma ser
+  #     UEFI, mas isso muda tudo no boot: confirme com precheck.yml antes.
+  #
+  # (d) VLAN_AD. Win_Server_SQL_LAB e WinServer22_AD têm uma SEGUNDA placa na
+  #     VLAN_AD, que ainda não existe no OLVM. A role create_vm cria apenas
+  #     UMA placa (ovirtmgmt). Enquanto a VLAN não for criada, migrar essas
+  #     duas produziria uma VM incompleta — e você mencionou que talvez vá
+  #     refazê-las do zero. Decida isso antes de descomentar.
+  # =========================================================================
+
+  # - name: Win_Server_25
+  #   disks:
+  #     - Win_Server_25
+  #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
+  #   operating_system: other     # ver nota sobre IDs de SO no fim do arquivo
+  #   cpu_sockets: 1
+  #   cpu_cores: 4
+  #   cpu_threads: 1
+  #   memory_gib: 4
+  #   disk_interface: sata        # até instalar o virtio-win
+  #   nic_interface: e1000        # até instalar o virtio-win
+  #   fix_network: false          # netplan não existe no Windows
+
+  # - name: Win_Server_SQL_LAB
+  #   # BLOQUEADA: tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
+  #   disks:
+  #     - Win_Server_SQL_LAB
+  #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
+  #   operating_system: other
+  #   cpu_sockets: 1
+  #   cpu_cores: 2
+  #   cpu_threads: 1
+  #   memory_gib: 8
+  #   disk_interface: sata
+  #   nic_interface: e1000
+  #   fix_network: false
+
+  # - name: WinServer22_AD
+  #   # BLOQUEADA: tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
+  #   # Cuidado extra: é controlador de domínio. Migrar DC exige desligamento
+  #   # limpo (não snapshot/clone a quente) para não corromper o AD.
+  #   disks:
+  #     - WinServer22_AD
+  #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
+  #   operating_system: other
+  #   cpu_sockets: 1
+  #   cpu_cores: 4
+  #   cpu_threads: 1
+  #   memory_gib: 4
+  #   disk_interface: sata
+  #   nic_interface: e1000
+  #   fix_network: false
+
+##############################################################################
+# NOTA SOBRE operating_system
+#
+# Usei `other_linux` porque é aceito em qualquer versão do engine e não
+# quebra a migração — o campo influencia otimizações e dispositivos padrão,
+# não o boot. Para deixar exato (ex.: ubuntu_22_04, windows_2022x64), liste os
+# IDs que o SEU engine aceita:
+#
+#   ansible localhost -m ovirt.ovirt.ovirt_vm_os_info \
+#     -e @group_vars/vault.yml --vault-password-file ~/.vault-pass \
+#     -a "auth='{url: https://olvm.mvrc.local/ovirt-engine/api,
+#                username: admin@ovirt@internalsso,
+#                password: SENHA, insecure: true}'"
+#
+# Ou pela API, que é mais direto:
+#   curl -sk -u 'admin@ovirt@internalsso:SENHA' \
+#     -H 'Accept: application/json' \
+#     https://olvm.mvrc.local/ovirt-engine/api/operatingsystems \
+#     | python3 -c 'import json,sys; [print(o["name"]) for o in json.load(sys.stdin)["operating_system"]]'
+#
+# Se você passar um ID inválido, o módulo falha dizendo quais são os válidos —
+# erro barato, acontece antes de qualquer cópia de disco.
+#
+# A VM do Jenkins NÃO entra nesta lista: ela executa o pipeline. Os playbooks
+# abortam se "jenkins" aparecer no nome. Procedimento manual em docs/migration.md.
+##############################################################################

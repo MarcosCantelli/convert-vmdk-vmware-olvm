@@ -142,16 +142,24 @@ Cinco fatos aprendidos numa migração manual bem-sucedida estão codificados aq
 |---|---|---|
 | Senha do engine (Ansible) | `ansible/group_vars/vault.yml` (Vault, gitignored) | `--vault-password-file` da credential `ansible-vault-password` |
 | Senha do engine (Terraform) | credential do Jenkins | variável de ambiente `TF_VAR_ovirt_password` |
-| UUIDs do ambiente | `terraform/terraform.tfvars` (gitignored) | credential `olvm-tfvars` (*Secret file*, opcional) |
+| UUIDs do ambiente | credentials do Jenkins | `TF_VAR_cluster_id`, `TF_VAR_storage_domain_id`, `TF_VAR_vnic_profile_id` |
 | Chave SSH (host/ESXi) | credential do Jenkins | `sshagent(['olvm-ssh-key'])` |
 | Senha para o `ovirt-img` | arquivo temporário `chmod 600` | criado e destruído em `block`/`always` |
 
 Credentials que precisam existir no Jenkins:
 
-- `ansible-vault-password` — *Secret file* com a senha do vault
-- `olvm-ssh-key` — *SSH Username with private key*
-- `olvm-api-password` — *Secret text* com a senha de `admin@ovirt@internalsso`
-- `olvm-tfvars` — *Secret file* com o `terraform.tfvars` (opcional)
+| ID | Tipo | Conteúdo |
+|---|---|---|
+| `ansible-vault-password` | Secret file | arquivo com a senha do Ansible Vault |
+| `olvm-ssh-key` | **SSH Username with private key** | chave privada do `mvrc`; username `mvrc` |
+| `olvm-api-password` | Secret text | senha de `admin@ovirt@internalsso` (a senha do admin do engine) |
+| `olvm-cluster-id` | Secret text | UUID do cluster `Default` |
+| `olvm-storage-domain-id` | Secret text | UUID do `hosted_storage` |
+| `olvm-vnic-profile-id` | Secret text | UUID do perfil de vNIC de `ovirtmgmt` |
+
+A **lista de VMs a provisionar** é versionada em
+[terraform/vms.auto.tfvars](terraform/vms.auto.tfvars): ela é estado desejado,
+não segredo. Só senha e UUIDs ficam fora do git.
 
 O `.gitignore` bloqueia `group_vars/vault.yml`, `*.qcow2`, `*.vmdk`, `*.pem`,
 `*.key`, `*.tfvars`, `.terraform/`, `*.retry`, `.engine-pass` e `*.tfstate`.

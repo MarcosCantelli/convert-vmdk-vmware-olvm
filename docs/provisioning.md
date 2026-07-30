@@ -56,17 +56,45 @@ módulo o descobre sozinho quando `template_id` fica ausente.
 
 ## 3. Configurar segredos
 
+Há três categorias de valor, e cada uma mora num lugar diferente. Isso não é
+burocracia: é o que permite o repositório ser público sem vazar nada.
+
+| Categoria | Onde mora | Versionado? |
+|---|---|---|
+| Senha da API | variável de ambiente `TF_VAR_ovirt_password` | não |
+| UUIDs do ambiente (cluster, storage domain, vNIC) | `TF_VAR_*` ou `terraform.tfvars` local | não |
+| **Lista de VMs desejadas** | `terraform/vms.auto.tfvars` | **sim** |
+
+**Na sua máquina** — o `terraform.tfvars` é prático para os UUIDs:
+
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars   # ignorado pelo git
-$EDITOR terraform.tfvars                       # UUIDs e VMs — SEM senha
+$EDITOR terraform.tfvars                       # UUIDs — SEM senha
 
 export TF_VAR_ovirt_password='senha-do-admin@ovirt@internalsso'
 ```
 
-A senha **nunca** entra em arquivo. No Jenkins ela vem da credential
-`olvm-api-password` (*Secret text*), exposta ao Terraform como
-`TF_VAR_ovirt_password`.
+**No Jenkins** — o `terraform.tfvars` não existe no workspace (está no
+`.gitignore`), então tudo entra por variável de ambiente, vindo de credentials
+do tipo *Secret text*:
+
+| Credential | Vira |
+|---|---|
+| `olvm-api-password` | `TF_VAR_ovirt_password` |
+| `olvm-cluster-id` | `TF_VAR_cluster_id` |
+| `olvm-storage-domain-id` | `TF_VAR_storage_domain_id` |
+| `olvm-vnic-profile-id` | `TF_VAR_vnic_profile_id` |
+
+O Terraform lê `TF_VAR_<nome>` nativamente — não precisa de `-var` na linha de
+comando. E o Jenkins mascara esses valores no log do build.
+
+A **lista de VMs** segue por outro caminho, de propósito: ela fica em
+`terraform/vms.auto.tfvars`, **versionada**. É o estado desejado da
+infraestrutura — quem lê o repositório precisa saber quais VMs existem. O
+sufixo `.auto.tfvars` faz o Terraform carregar o arquivo sozinho, e o
+`.gitignore` tem uma exceção explícita (`!terraform/*.auto.tfvars`) para ele
+escapar do bloqueio geral de `*.tfvars`.
 
 ## 4. VM em branco (sem template)
 

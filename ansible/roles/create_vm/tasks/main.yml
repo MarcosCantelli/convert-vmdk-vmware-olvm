@@ -73,7 +73,7 @@
     id: "{{ item.id }}"
     vm_name: "{{ vm.name }}"
     state: attached
-    interface: "{{ ovirt_disk_interface }}"
+    interface: "{{ create_vm_disk_interface }}"
     # Só o primeiro disco da lista é bootável.
     bootable: "{{ item.bootable }}"
     activate: true
@@ -92,7 +92,7 @@
     name: "{{ ovirt_nic_name }}"
     network: "{{ ovirt_network }}"
     profile: "{{ ovirt_vnic_profile | default(omit, true) }}"
-    interface: "{{ ovirt_nic_interface }}"
+    interface: "{{ create_vm_nic_interface }}"
     state: present
   delegate_to: "{{ olvm_host }}"
 

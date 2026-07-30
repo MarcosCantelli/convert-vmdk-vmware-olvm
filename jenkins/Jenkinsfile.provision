@@ -6,14 +6,21 @@
 // A aprovação manual existe porque `apply` cria e destrói recursos de verdade.
 // Ninguém deve conseguir remover uma VM por engano só clicando em "Build".
 //
-// CREDENCIAIS que precisam existir no Jenkins:
-//   * olvm-api-password  (tipo "Secret text")
-//       senha de admin@ovirt@internalsso; exposta ao Terraform como
-//       TF_VAR_ovirt_password
-//   * olvm-tfvars        (tipo "Secret file", OPCIONAL)
-//       terraform.tfvars com os UUIDs do ambiente (cluster, storage domain,
-//       vNIC profile). Sem esta credential, o pipeline usa o
-//       terraform.tfvars do repositório, se existir.
+// CREDENCIAIS que precisam existir no Jenkins (todas do tipo "Secret text"):
+//   * olvm-api-password       senha de admin@ovirt@internalsso
+//   * olvm-cluster-id         UUID do cluster Default
+//   * olvm-storage-domain-id  UUID do hosted_storage
+//   * olvm-vnic-profile-id    UUID do perfil de vNIC da rede ovirtmgmt
+//
+// POR QUE CREDENTIAL E NÃO ARQUIVO: o terraform.tfvars está no .gitignore
+// (repo público), então ele não existe no workspace do Jenkins. Em vez de
+// carregar um arquivo, cada valor entra como variável de ambiente TF_VAR_*,
+// que o Terraform lê nativamente. Vantagens: o Jenkins mascara os valores no
+// log, e fica explícito no pipeline de onde vem cada coisa.
+//
+// A LISTA DE VMs, ao contrário, é versionada em terraform/vms.auto.tfvars —
+// ela é o estado desejado da infraestrutura, não segredo. O Terraform carrega
+// arquivos *.auto.tfvars automaticamente.
 //
 // ESTADO DO TERRAFORM: este pipeline usa o backend local (terraform.tfstate no
 // workspace), que NÃO sobrevive à limpeza do workspace. Antes de usar isto
@@ -85,30 +92,27 @@ pipeline {
     stage('Terraform plan') {
       steps {
         dir("${env.TF_DIR}") {
-          // A senha entra como TF_VAR_ovirt_password: variável de ambiente,
-          // nunca em arquivo. O Jenkins mascara o valor no log.
-          withCredentials([string(credentialsId: 'olvm-api-password', variable: 'TF_VAR_ovirt_password')]) {
+          // Senha e UUIDs entram como TF_VAR_*: variáveis de ambiente que o
+          // Terraform lê nativamente. Nada é escrito em arquivo, e o Jenkins
+          // mascara os valores no log.
+          withCredentials([
+            string(credentialsId: 'olvm-api-password', variable: 'TF_VAR_ovirt_password'),
+            string(credentialsId: 'olvm-cluster-id', variable: 'TF_VAR_cluster_id'),
+            string(credentialsId: 'olvm-storage-domain-id', variable: 'TF_VAR_storage_domain_id'),
+            string(credentialsId: 'olvm-vnic-profile-id', variable: 'TF_VAR_vnic_profile_id'),
+          ]) {
             script {
-              // Traz o terraform.tfvars da credential, se ela existir.
-              def tfvarsArg = ''
-              try {
-                withCredentials([file(credentialsId: 'olvm-tfvars', variable: 'TFVARS_FILE')]) {
-                  sh 'cp "$TFVARS_FILE" ./jenkins.auto.tfvars'
-                }
-                tfvarsArg = '-var-file=jenkins.auto.tfvars'
-                echo 'Usando os UUIDs da credential olvm-tfvars.'
-              } catch (ignored) {
-                echo 'Credential olvm-tfvars não encontrada — usando o terraform.tfvars do repositório, se houver.'
-              }
-
               def targetArg = params.TARGET?.trim() ? "-target='${params.TARGET.trim()}'" : ''
               def destroyArg = (params.ACTION == 'destroy') ? '-destroy' : ''
 
+              // A lista de VMs vem de vms.auto.tfvars, carregado sozinho pelo
+              // Terraform — por isso não há -var-file aqui.
+              //
               // -out grava o plano: o apply executa EXATAMENTE o que foi
               // aprovado, sem recalcular (evita surpresa entre plan e apply).
               sh """
                 set -eu
-                terraform plan ${destroyArg} ${tfvarsArg} ${targetArg} -out=tfplan
+                terraform plan ${destroyArg} ${targetArg} -out=tfplan
                 terraform show -no-color tfplan > tfplan.txt
               """
 
@@ -155,7 +159,14 @@ pipeline {
       when { expression { params.ACTION in ['apply', 'destroy'] } }
       steps {
         dir("${env.TF_DIR}") {
-          withCredentials([string(credentialsId: 'olvm-api-password', variable: 'TF_VAR_ovirt_password')]) {
+          // O plano salvo já contém os valores resolvidos, mas o provider ainda
+          // precisa autenticar para executar — daí as credentials de novo.
+          withCredentials([
+            string(credentialsId: 'olvm-api-password', variable: 'TF_VAR_ovirt_password'),
+            string(credentialsId: 'olvm-cluster-id', variable: 'TF_VAR_cluster_id'),
+            string(credentialsId: 'olvm-storage-domain-id', variable: 'TF_VAR_storage_domain_id'),
+            string(credentialsId: 'olvm-vnic-profile-id', variable: 'TF_VAR_vnic_profile_id'),
+          ]) {
             // Aplica o plano salvo — o mesmo que foi revisado e aprovado.
             sh '''
               set -eu
@@ -173,9 +184,8 @@ pipeline {
   post {
     always {
       dir("${env.TF_DIR}") {
-        // O plano binário pode conter valores sensíveis em texto claro, e o
-        // tfvars veio de credential: nada disso fica no workspace.
-        sh 'rm -f tfplan jenkins.auto.tfvars || true'
+        // O plano binário pode conter valores sensíveis em texto claro.
+        sh 'rm -f tfplan || true'
       }
     }
     success {

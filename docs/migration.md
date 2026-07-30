@@ -35,28 +35,95 @@ python3 -c 'import ovirtsdk4; print("SDK OK")'
 mountpoint /mnt/sd1
 ```
 
+Permissões, uma vez só (o pipeline conecta como `mvrc`, sem sudo):
+
+```bash
+sudo mkdir -p /mnt/sd1/migracao
+sudo chown mvrc:mvrc /mnt/sd1/migracao   # escrever os qcow2 no NFS
+sudo usermod -aG kvm mvrc                # virt-customize usar /dev/kvm
+# saia e entre de novo na sessão para o grupo kvm valer
+```
+
 No runner do Jenkins (ou na sua estação):
 
 ```bash
 # A zona mvrc.local roda num BIND9 que o roteador não encaminha.
 # Sem esta linha, nada resolve o engine:
 echo '192.168.31.9  olvm.mvrc.local olvm' | sudo tee -a /etc/hosts
-
-# Chave SSH para o host de virtualização e para o ESXi
-ssh-copy-id root@192.168.31.11
-# No ESXi, a chave vai em /etc/ssh/keys-root/authorized_keys
 ```
 
-Do host de virtualização para o ESXi também precisa haver acesso SSH — é ele
-quem puxa os discos. Teste antes:
+### Duas cadeias de SSH diferentes (é aqui que todo mundo se confunde)
+
+```
+[runner Jenkins] --(1)--> [host OLVM 31.11] --(2)--> [ESXi 31.12]
+```
+
+1. **Runner → host OLVM**, como `mvrc`. É o Ansible conectando. Provavelmente
+   já funciona: se `ssh mvrc@192.168.31.11` entra sem senha, está pronto.
+2. **Host OLVM → ESXi**, como `root`. É o `scp` puxando os discos. **Esta é a
+   que falta.**
+
+O detalhe que importa: o `scp` roda **de dentro do 31.11**, como o usuário
+`mvrc`. Logo, a chave que o ESXi precisa autorizar é a **do `mvrc` no 31.11** —
+não a da sua estação. Chave de máquina diferente, par diferente.
+
+### Instalando a chave no ESXi
+
+**Passo 1 — habilite o SSH no ESXi.** No vSphere Client: *Host → Configure →
+System → Services → TSM-SSH → Start*. (Ou no ESXi Shell/DCUI:
+`Troubleshooting Options → Enable SSH`.)
+
+**Passo 2 — gere o par de chaves para o `mvrc` no host OLVM**, se ainda não
+existir:
 
 ```bash
-ssh root@192.168.31.11 "ssh -o BatchMode=yes root@192.168.31.12 'ls /vmfs/volumes/VS2_HD2_1TB'"
+ssh mvrc@192.168.31.11
+ls ~/.ssh/id_*.pub || ssh-keygen -t ed25519 -N '' -C 'mvrc@olvm-host-01 migracao'
+cat ~/.ssh/id_ed25519.pub    # copie esta linha inteira
 ```
 
-Se não houver chave no ESXi, dá para usar senha (`esxi_use_ssh_password: true` +
-`vault_esxi_ssh_password`), mas a senha fica visível no `ps` do host durante a
-cópia. Prefira a chave.
+**Passo 3 — autorize essa chave no ESXi.** O ESXi **não** usa
+`~/.ssh/authorized_keys` como o Linux: o arquivo do root fica em
+`/etc/ssh/keys-root/authorized_keys`. Ainda de dentro do 31.11:
+
+```bash
+# Vai pedir a senha do root do ESXi — esta é a única vez.
+cat ~/.ssh/id_ed25519.pub | ssh root@192.168.31.12 \
+  "cat >> /etc/ssh/keys-root/authorized_keys && chmod 600 /etc/ssh/keys-root/authorized_keys"
+```
+
+Não use `ssh-copy-id`: ele escreve em `~/.ssh/authorized_keys`, que no ESXi é
+ignorado — a autenticação continuaria pedindo senha e você acharia que a chave
+não funcionou.
+
+**Passo 4 — persista.** O ESXi mantém parte da configuração em ramdisk e só
+grava no disco periodicamente. Se o host reiniciar antes disso, a chave se
+perde. Force o salvamento:
+
+```bash
+ssh root@192.168.31.12 /sbin/auto-backup.sh
+```
+
+**Passo 5 — teste a cadeia inteira**, exatamente como o Ansible vai fazer
+(`-o BatchMode=yes` falha em vez de pedir senha, então o teste é honesto):
+
+```bash
+ssh mvrc@192.168.31.11 \
+  "ssh -o BatchMode=yes root@192.168.31.12 'ls /vmfs/volumes/VS2_HD2_1TB'"
+```
+
+Se listar as pastas das VMs, acabou — o `precheck.yml` e a role `extract` vão
+funcionar.
+
+### Alternativa: senha em vez de chave
+
+Se não quiser mexer no ESXi, existe o caminho por senha. Em
+`group_vars/all.yml` mude `esxi_use_ssh_password: true`, preencha
+`vault_esxi_ssh_password` no vault, e instale `sshpass` no 31.11
+(`sudo dnf install -y sshpass`).
+
+Funciona, mas a senha do root do ESXi fica visível no `ps aux` do host durante
+toda a cópia — que dura horas num disco grande. Prefira a chave.
 
 ## 2. As cinco lições que definem o processo
 
@@ -150,11 +217,19 @@ storage domain. A única porta de entrada para o storage domain é a API.
 
 ## 3. Preparar os segredos
 
+O arquivo vai em `ansible/group_vars/vault.yml`, **ao lado** do `.example`. O
+diretório `group_vars/` já existe no repositório: não crie pasta nova nem pasta
+oculta — o `.gitignore` já bloqueia exatamente esse caminho.
+
 ```bash
-cd ansible
+cd ~/projetos/convert-vmdk-vmware-olvm/ansible     # o cd importa: os caminhos
+                                                   # abaixo são relativos a ele
 cp group_vars/vault.yml.example group_vars/vault.yml
 $EDITOR group_vars/vault.yml          # preencha vault_ovirt_password
 ansible-vault encrypt group_vars/vault.yml
+
+# confirme que o git não vê o arquivo (deve imprimir o caminho e nada mais):
+git check-ignore -v group_vars/vault.yml
 ```
 
 Guarde a senha do vault num arquivo fora do repositório:

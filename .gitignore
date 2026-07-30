@@ -46,6 +46,12 @@ terraform.rc
 *.tfvars
 *.tfvars.json
 
+# EXCEÇÃO: o inventário de VMs a provisionar É código de infraestrutura e
+# precisa ser versionado — ele descreve o estado desejado, não segredo.
+# O Terraform carrega *.auto.tfvars sozinho, sem -var-file.
+# Segredos e UUIDs do ambiente NÃO vão aqui: entram por TF_VAR_* (ambiente).
+!terraform/*.auto.tfvars
+
 # Planos binários podem conter valores sensíveis em texto claro
 tfplan
 *.tfplan
