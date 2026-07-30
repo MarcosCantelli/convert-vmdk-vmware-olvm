@@ -100,11 +100,20 @@ esxi_ssh_extra_opts:
 #                  causa de globs e redirecionamentos: '*.vmx', 2>/dev/null)
 # esxi_scp_argv -> lista, prefixo do scp (argv evita shell na cópia longa)
 # ---------------------------------------------------------------------------
+#
+# CUIDADO ao editar as duas variáveis abaixo: TODO o conteúdo precisa caber
+# dentro de UM único bloco {{ ... }}. Num bloco YAML dobrado (>-), linhas mais
+# indentadas que a primeira têm a quebra de linha PRESERVADA em vez de virar
+# espaço. Se a quebra cair entre dois blocos {{ }}, ela vira "\n" literal no
+# comando e o shell lê duas linhas — o erro aparece como `usage: ssh` seguido
+# de `-o: command not found`. Dentro de um único {{ }}, a quebra é só espaço em
+# branco para o Jinja e não chega ao comando.
 esxi_ssh_cmd: >-
-  {{ ('sshpass -p ' ~ (vault_esxi_ssh_password | default('') | quote) ~ ' ssh')
-     if (esxi_use_ssh_password | bool)
-     else 'ssh -o BatchMode=yes' }}
-  {{ esxi_ssh_extra_opts | join(' ') }} {{ esxi_user }}@{{ esxi_host }}
+  {{ ((['sshpass', '-p', vault_esxi_ssh_password | default('') | quote, 'ssh']
+       if (esxi_use_ssh_password | bool)
+       else ['ssh', '-o', 'BatchMode=yes'])
+      + esxi_ssh_extra_opts
+      + [esxi_user ~ '@' ~ esxi_host]) | join(' ') }}
 
 esxi_scp_argv: >-
   {{ (['sshpass', '-p', vault_esxi_ssh_password | default('')]
