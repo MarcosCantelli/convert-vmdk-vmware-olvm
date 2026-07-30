@@ -105,9 +105,11 @@
       delegate_to: "{{ olvm_host }}"
       async: "{{ upload_timeout }}"
       poll: 30
-      # no_log porque a task manipula o caminho do arquivo de senha e a saída
-      # de erro do ovirt-img pode incluir cabeçalhos de autenticação.
-      no_log: true
+      # SEM no_log aqui, e isso é deliberado. A senha não passa pela linha de
+      # comando — vai por --password-file, que existe exatamente para isso.
+      # Não há segredo nesta task, e censurá-la só esconderia a mensagem de
+      # erro do ovirt-img, que é o que se precisa ler quando o upload falha.
+      # O no_log fica onde há segredo de verdade: na criação do arquivo acima.
 
   always:
     - name: "[upload] Remover o arquivo temporário de senha"
