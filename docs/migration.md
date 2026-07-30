@@ -394,19 +394,38 @@ você valida antes de ligar. Para ligar automaticamente, mude para `running` em
    (ou deixe `extract_remove_vmdk_after_convert: true` para apagar os `.vmdk`
    logo após a conversão — recomendo manter `false` até validar.)
 
-### Recuperando o IP fixo
+### O IP fixo é preservado automaticamente
 
-A VM migrada sobe em **DHCP**, e isso é intencional: o `99-migracao-netcfg.yaml`
-existe para ela não subir isolada quando o nome da interface muda. Não é o
-estado final.
+A role `fix_network` **lê o netplan que já existe dentro do qcow2** (com
+`virt-cat`, sem ligar a VM) e reescreve o mesmo endereço, gateway e DNS
+amarrados ao nome novo da interface.
 
-A boa notícia é que a configuração antiga **continua dentro da VM**. A role
-`fix_network` só remove `70-persistent-net.rules` e `50-cloud-init.yaml`; um
-`00-installer-config.yaml`, por exemplo, permanece intacto. Ele é ignorado
-porque nomeia `ens160`, que não existe mais no KVM — mas é ali que está o IP
-que a VM usava.
+Funciona porque a configuração antiga continua na imagem: a role só remove
+`70-persistent-net.rules` e `50-cloud-init.yaml`; um `00-installer-config.yaml`
+permanece intacto. Ele é ignorado pelo sistema, porque nomeia `ens160` — que
+não existe mais no KVM —, mas é exatamente ali que está o endereço.
 
-Dentro da VM, com o console do OLVM:
+O comportamento por VM:
+
+| Situação na origem | Resultado no OLVM |
+|---|---|
+| IP fixo no netplan | mesmo IP, agora casando por `match: name "en*"` |
+| já usava DHCP | DHCP |
+| distro sem netplan (NetworkManager) | DHCP, como rede de segurança |
+
+A role anuncia a decisão no log (`IP FIXO preservado: ...` ou `DHCP — nenhum
+endereço fixo encontrado`). Para mudar o endereço durante a migração, ou forçar
+DHCP numa VM específica, use o campo `network` em `vars/vms.yml` — ele vence a
+detecção automática.
+
+Dois avisos que valem para qualquer troca de IP: a VM ganha **MAC novo** no
+oVirt, então reserva de DHCP amarrada ao MAC antigo deixa de valer; e registro
+no BIND9 continua apontando para o endereço anterior.
+
+### Ajustando a rede à mão, se precisar
+
+Se a detecção não cobrir seu caso — múltiplas interfaces, bonding, VLAN —, o
+ajuste é feito no console do OLVM depois do boot:
 
 ```bash
 # 1. descubra o endereço antigo e os dados da rede atual

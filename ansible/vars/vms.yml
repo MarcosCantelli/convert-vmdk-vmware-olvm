@@ -16,7 +16,32 @@
 #   disk_interface    override; virtio_scsi (Linux) | sata (Windows sem virtio)
 #   nic_interface     override; virtio (Linux) | e1000 (Windows sem virtio)
 #   fix_network       true = virt-customize offline (só faz sentido em Linux)
+#   network           opcional; veja "IP FIXO" abaixo
 #   storage_domain    opcional, sobrescreve ovirt_storage_domain
+#
+# ---------------------------------------------------------------------------
+# IP FIXO — por padrão é PRESERVADO, sem você declarar nada
+# ---------------------------------------------------------------------------
+# A role fix_network lê o netplan que já existe DENTRO do qcow2 (virt-cat, com
+# a VM desligada) e reescreve o mesmo endereço, gateway e DNS amarrados ao nome
+# NOVO da interface. VM que tinha IP fixo continua com ele; VM que usava DHCP
+# continua em DHCP. Nada a configurar.
+#
+# Use o campo `network` só quando quiser MUDAR algo na migração:
+#
+#   network:                                  # trocar o endereço
+#     addresses: ["192.168.31.50/24"]
+#     routes:
+#       - to: default
+#         via: 192.168.31.1
+#     nameservers:
+#       addresses: ["192.168.31.9"]
+#
+#   network: {}                               # forçar DHCP nesta VM
+#
+# Lembre que a VM ganha MAC NOVO no oVirt: reserva de DHCP amarrada ao MAC
+# antigo deixa de valer, e registro no BIND9 continua apontando para o
+# endereço antigo se você mudar o IP.
 #
 # ---------------------------------------------------------------------------
 # ORIGEM DOS DADOS DESTE ARQUIVO (tudo verificado, nada suposto)
