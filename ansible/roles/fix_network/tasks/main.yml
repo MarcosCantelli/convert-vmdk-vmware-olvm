@@ -1,0 +1,107 @@
+---
+##############################################################################
+# role: fix_network
+#
+# O que faz: corrige a configuração de rede DENTRO do qcow2, com a VM ainda
+# desligada, usando virt-customize (libguestfs).
+#
+# Por que é obrigatório (lição da migração manual): o nome da interface muda
+# ao sair do VMware (ens160) para o KVM (enp1s0). Se você subir a VM antes de
+# corrigir, ela fica sem rede — e sem rede o Ansible não entra para corrigir.
+# Consertar offline é a única forma de sair desse círculo.
+#
+# Entrada:  `vm` (dict) + qcow2 já produzido pela role extract
+# Onde roda: delegado ao host de virtualização (quem tem virt-customize)
+#
+# IDEMPOTÊNCIA: gravamos um arquivo-sentinela `.<disco>.netfix.done` no
+# diretório de trabalho. Se ele existe, o virt-customize é pulado.
+##############################################################################
+
+- name: "[fix_network] Verificar se o qcow2 existe antes de mexer nele"
+  ansible.builtin.stat:
+    path: "{{ vm_workdir }}/{{ item }}.qcow2"
+  loop: "{{ fix_network_disks }}"
+  register: fix_network_qcow2
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[fix_network] Abortar se o disco de boot não foi convertido"
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      {{ vm_workdir }}/{{ item.item }}.qcow2 não existe.
+      Rode a role `extract` antes de `fix_network`.
+    quiet: true
+  loop: "{{ fix_network_qcow2.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "[fix_network] Gerar o netplan genérico no host de virtualização"
+  ansible.builtin.template:
+    src: 99-migracao-netcfg.yaml.j2
+    dest: "{{ vm_workdir }}/{{ fix_network_netplan_file }}"
+    mode: "0644"
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[fix_network] Injetar a configuração de rede no qcow2 (offline)"
+  # Notas sobre o comando:
+  #
+  # LIBGUESTFS_BACKEND=direct — sem isso o libguestfs tenta usar libvirt e
+  #   falha por permissão/rede no host oVirt. É o ajuste que faz o
+  #   virt-customize funcionar num host de virtualização gerenciado.
+  #
+  # --upload origem:destino — copia o netplan para dentro da imagem.
+  #
+  # Removemos os arquivos com `--run-command rm -f` em vez de `--delete`
+  #   de propósito: `rm -f` não reclama quando o arquivo não existe, então a
+  #   mesma receita serve para VMs com e sem cloud-init.
+  #
+  # `netplan generate || true` valida a sintaxe já dentro da imagem; o
+  #   `|| true` evita quebrar a migração em distros sem netplan (RHEL/Oracle
+  #   Linux usam NetworkManager e simplesmente ignoram o arquivo).
+  ansible.builtin.command:
+    argv:
+      - virt-customize
+      - "-a"
+      - "{{ vm_workdir }}/{{ item.item }}.qcow2"
+      - "--upload"
+      - "{{ vm_workdir }}/{{ fix_network_netplan_file }}:/etc/netplan/{{ fix_network_netplan_file }}"
+      - "--run-command"
+      - "chmod 0600 /etc/netplan/{{ fix_network_netplan_file }} || true"
+      - "--run-command"
+      - "rm -f {{ fix_network_remove_files | join(' ') }}"
+      - "--run-command"
+      - "netplan generate || true"
+  environment:
+    LIBGUESTFS_BACKEND: direct
+  args:
+    creates: "{{ vm_workdir }}/.{{ item.item }}.netfix.done"
+  loop: "{{ fix_network_qcow2.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: fix_network_result
+  delegate_to: "{{ olvm_host }}"
+  async: "{{ fix_network_timeout }}"
+  poll: 15
+
+- name: "[fix_network] Marcar o disco como já ajustado (sentinela)"
+  # noqa: no-handler
+  # Não é caso de handler: a sentinela é por DISCO (o loop percorre a lista) e
+  # precisa ser gravada imediatamente após o ajuste daquele disco, não ao fim
+  # do play. Handler rodaria uma vez só, no final, e perderia a granularidade.
+  ansible.builtin.file:
+    path: "{{ vm_workdir }}/.{{ item.item }}.netfix.done"
+    state: touch
+    mode: "0644"
+  loop: "{{ fix_network_result.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item is changed
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[fix_network] Lembrete sobre a configuração definitiva"
+  ansible.builtin.debug:
+    msg: >-
+      Rede da VM '{{ vm.name }}' ajustada para DHCP genérico (match en*).
+      Depois do primeiro boot, aplique a configuração de rede definitiva
+      (IP fixo etc.) — este netplan é apenas a rede de segurança da migração.

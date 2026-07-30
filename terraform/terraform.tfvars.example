@@ -1,0 +1,109 @@
+##############################################################################
+# terraform.tfvars.example — MODELO. Copie para terraform.tfvars e ajuste.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# terraform.tfvars está no .gitignore (padrão *.tfvars). NUNCA coloque a
+# senha aqui: ela vai por variável de ambiente.
+#
+#   export TF_VAR_ovirt_password='senha-do-admin@ovirt@internalsso'
+#
+# Os UUIDs abaixo são PLACEHOLDERS. Descubra os do seu ambiente com:
+#   ./scripts/get-ovirt-ids.sh
+##############################################################################
+
+# ---------------------------------------------------------------------------
+# Conexão com o engine
+# ---------------------------------------------------------------------------
+ovirt_url      = "https://olvm.mvrc.local/ovirt-engine/api/"
+ovirt_username = "admin@ovirt@internalsso"
+
+# Certificado do engine sem FQDN no SAN -> sem verificação, por ora.
+ovirt_tls_insecure = true
+
+# ---------------------------------------------------------------------------
+# IDs do ambiente (SUBSTITUA pelos UUIDs reais)
+# ---------------------------------------------------------------------------
+cluster_id        = "00000000-0000-0000-0000-000000000000" # cluster Default
+storage_domain_id = "00000000-0000-0000-0000-000000000000" # hosted_storage
+vnic_profile_id   = "00000000-0000-0000-0000-000000000000" # perfil da rede ovirtmgmt
+
+# ---------------------------------------------------------------------------
+# VMs a provisionar
+# ---------------------------------------------------------------------------
+vms = {
+
+  # -------------------------------------------------------------------------
+  # EXEMPLO 1 — VM EM BRANCO (sem template)
+  # Cria a VM, um disco vazio de 40 GiB marcado como bootável e uma placa de
+  # rede. Serve para instalar o sistema pelo console/ISO depois.
+  # -------------------------------------------------------------------------
+  "app-teste-01" = {
+    cpu_sockets = 1
+    cpu_cores   = 2
+    cpu_threads = 1
+    memory_gib  = 4
+    vm_type     = "server"
+    comment     = "VM em branco criada por Terraform"
+
+    disks = [
+      {
+        alias     = "app-teste-01-boot"
+        size_gib  = 40
+        format    = "cow" # cow = qcow2/thin
+        sparse    = true
+        bootable  = true
+        interface = "virtio_scsi"
+      },
+    ]
+
+    nics = [
+      { name = "nic1" }, # usa o vnic_profile_id global
+    ]
+
+    start = false # crie desligada e valide antes de ligar
+  }
+
+  # -------------------------------------------------------------------------
+  # EXEMPLO 2 — VM A PARTIR DE TEMPLATE, com cloud-init
+  # O template já traz o disco de sistema, então não declaramos disco de boot;
+  # aqui só adicionamos um disco de dados.
+  #
+  # LEMBRETE: o firmware (BIOS/UEFI) vem do TEMPLATE — o provider não permite
+  # escolher. Mantenha um template BIOS e um UEFI se precisar dos dois.
+  # -------------------------------------------------------------------------
+  "web-teste-01" = {
+    # SUBSTITUA pelo UUID do seu template (liste com get-ovirt-ids.sh).
+    template_id = "00000000-0000-0000-0000-000000000000"
+    clone       = true # VM independente do template
+
+    cpu_sockets = 2
+    cpu_cores   = 2
+    cpu_threads = 1
+    memory_gib  = 8
+
+    # VERIFIQUE os IDs de SO aceitos pelo seu engine antes de usar.
+    os_type = "other_linux"
+
+    disks = [
+      {
+        alias     = "web-teste-01-dados"
+        size_gib  = 100
+        format    = "cow"
+        interface = "virtio_scsi"
+      },
+    ]
+
+    nics = [
+      { name = "nic1" },
+    ]
+
+    cloud_init_hostname = "web-teste-01"
+    cloud_init_script   = "packages:\n  - qemu-guest-agent\nruncmd:\n  - systemctl enable --now qemu-guest-agent\n"
+
+    start = true
+
+    # wait_for_ip exige qemu-guest-agent na VM; sem ele o apply fica esperando.
+    wait_for_ip = false
+  }
+}

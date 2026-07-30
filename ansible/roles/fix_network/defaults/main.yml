@@ -1,0 +1,32 @@
+---
+##############################################################################
+# roles/fix_network/defaults/main.yml
+##############################################################################
+
+# vm_workdir vem de group_vars/all.yml (compartilhado com extract e upload).
+
+# Quais discos recebem o ajuste de rede.
+# Por padrão SÓ O PRIMEIRO disco (o de boot) — é onde vive o /etc.
+# Rodar virt-customize num disco de dados sem sistema operacional falha com
+# "no operating system was found on this disk".
+fix_network_disks: "{{ [vm.disks | first] }}"
+
+# Nome do arquivo netplan injetado. O prefixo 99 garante que ele seja o
+# ÚLTIMO a ser lido, sobrepondo qualquer configuração anterior.
+fix_network_netplan_file: 99-migracao-netcfg.yaml
+
+# Glob de interfaces que o netplan deve casar.
+# "en*" cobre os nomes previsíveis do systemd (enp1s0, ens3, eno1...).
+# É exatamente o que resolve a troca de nome ens160 (VMware) -> enp1s0 (KVM).
+fix_network_match_glob: "en*"
+
+# Arquivos que atrapalham a rede depois da migração e são removidos:
+#   70-persistent-net.rules -> amarra o nome da interface ao MAC ANTIGO
+#   50-cloud-init.yaml      -> netplan gerado pelo cloud-init com o nome antigo
+fix_network_remove_files:
+  - /etc/udev/rules.d/70-persistent-net.rules
+  - /etc/netplan/50-cloud-init.yaml
+
+# Timeout do virt-customize (segundos). Ele sobe um appliance libguestfs,
+# o que pode ser lento na primeira execução.
+fix_network_timeout: 1800

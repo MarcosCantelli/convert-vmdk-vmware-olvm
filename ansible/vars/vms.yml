@@ -1,0 +1,57 @@
+##############################################################################
+# vars/vms.yml — inventário das VMs a migrar do vCenter/ESXi para o OLVM.
+#
+# Este arquivo é a "fila de trabalho": o migrate-batch.yml percorre a lista,
+# e o migrate-single.yml procura uma VM pelo nome (-e vm_name=...).
+#
+# Campos de cada VM:
+#   name              (obrigatório) nome final da VM no oVirt
+#   esxi_folder       pasta da VM dentro do datastore (default: = name)
+#   disks             (obrigatório) lista dos discos SEM extensão.
+#                     O primeiro da lista é tratado como disco de BOOT.
+#                     Ex.: para srv-web-01.vmdk + srv-web-01-flat.vmdk,
+#                     escreva apenas "srv-web-01".
+#   firmware          bios | uefi  (descubra com o playbook precheck.yml)
+#   operating_system  ID do SO no oVirt. VERIFIQUE os valores aceitos na sua
+#                     versão do engine (ovirt_vm_os_info / interface web),
+#                     ex.: rhel_9x64, ubuntu_22_04, other_linux, windows_2019x64
+#   cpu_sockets / cpu_cores / cpu_threads
+#   memory_gib        memória em GiB
+#   fix_network       true = roda virt-customize offline (recomendado p/ Linux)
+#   storage_domain    opcional, sobrescreve ovirt_storage_domain
+#
+# As entradas abaixo são EXEMPLOS com nomes fictícios. Troque pelas suas VMs
+# reais — não inventei nomes do seu ambiente.
+##############################################################################
+
+vms:
+  - name: exemplo-linux-01
+    esxi_folder: exemplo-linux-01
+    disks:
+      - exemplo-linux-01          # disco de boot
+    firmware: bios                # confirmado com precheck.yml (.vmx sem linha firmware)
+    operating_system: other_linux # VERIFICAR na sua versão do engine
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    fix_network: true
+
+  - name: exemplo-linux-02-uefi
+    esxi_folder: exemplo-linux-02-uefi
+    disks:
+      - exemplo-linux-02-uefi     # disco de boot
+      - exemplo-linux-02-dados    # disco adicional (não recebe fix de rede)
+    firmware: uefi                # .vmx tinha firmware = "efi"
+    operating_system: other_linux
+    cpu_sockets: 2
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 8
+    fix_network: true
+
+  # ATENÇÃO: a VM do Jenkins NÃO pode entrar nesta lista.
+  # Ela executa o próprio pipeline — migrá-la interromperia a execução no meio.
+  # Os playbooks têm guarda que aborta se "jenkins" aparecer no nome, mas a
+  # primeira linha de defesa é não colocar aqui. Migre-a manualmente, com o
+  # pipeline parado, seguindo docs/migration.md.

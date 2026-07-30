@@ -1,0 +1,30 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+# ---------------------------------------------------------------------------
+# Netplan genérico de migração — gerado pela role fix_network
+# VM: {{ vm.name }}
+#
+# Por que existir: ao sair do VMware para o KVM/oVirt, o nome da interface
+# MUDA (ex.: ens160 -> enp1s0). A configuração antiga aponta para um nome que
+# não existe mais, a VM sobe SEM REDE, e aí o Ansible também não consegue
+# entrar para consertar. Fica um impasse. A saída é injetar esta configuração
+# OFFLINE, com a VM desligada, antes do primeiro boot.
+#
+# A chave do truque é o `match: name: "en*"`: em vez de nomear a interface,
+# casamos com QUALQUER nome que comece com "en". Assim funciona sem sabermos
+# de antemão qual nome o KVM vai atribuir.
+#
+# Isto é uma rede de segurança temporária, com DHCP. Depois do primeiro boot,
+# aplique a configuração definitiva (IP fixo, bonding etc.) via Ansible.
+# ---------------------------------------------------------------------------
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    migracao-dhcp:
+      match:
+        name: "{{ fix_network_match_glob }}"
+      dhcp4: true
+      dhcp6: false
+      # optional: true evita que o boot fique preso em "waiting for network"
+      # por até 2 minutos caso o DHCP não responda.
+      optional: true

@@ -1,0 +1,85 @@
+##############################################################################
+# .gitignore — este repositório é PÚBLICO no GitHub.
+# Regra de ouro: se o arquivo pode conter senha, chave ou dado de disco,
+# ele NÃO entra no git. Segredo vai em Ansible Vault ou credential do Jenkins.
+##############################################################################
+
+# ---------------------------------------------------------------------------
+# Segredos — o .example é versionado, o arquivo real NUNCA
+# ---------------------------------------------------------------------------
+ansible/group_vars/vault.yml
+vault.yml
+*.vault
+.vault-password
+.vault_pass
+# arquivo temporário de senha do ovirt-img
+# (atenção: no .gitignore o comentário precisa ficar em linha própria —
+#  texto após o padrão passa a fazer PARTE do padrão e ele deixa de casar)
+.engine-pass
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+*.pfx
+
+# ---------------------------------------------------------------------------
+# Terraform
+# Observação didática: o .terraform.lock.hcl DEVE ser versionado (garante que
+# todos usem o mesmo hash do provider). Por isso ele não aparece aqui.
+# ---------------------------------------------------------------------------
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Arquivos de variáveis com valores reais (o *.tfvars.example não casa com
+# este padrão porque termina em .example, então continua versionado)
+*.tfvars
+*.tfvars.json
+
+# Planos binários podem conter valores sensíveis em texto claro
+tfplan
+*.tfplan
+
+# ---------------------------------------------------------------------------
+# Imagens de disco — pesam GBs e podem conter dados de produção
+# ---------------------------------------------------------------------------
+*.qcow2
+*.vmdk
+*.raw
+*.img
+*.iso
+*.ova
+*.ovf
+*.vmx
+*.vmsd
+*.nvram
+
+# ---------------------------------------------------------------------------
+# Ansible
+# ---------------------------------------------------------------------------
+*.retry
+# destino do `ansible-galaxy collection install -p collections`
+ansible/collections/
+ansible/*.log
+fact_cache/
+.ansible/
+
+# ---------------------------------------------------------------------------
+# Editores / sistema operacional
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

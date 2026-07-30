@@ -1,0 +1,143 @@
+---
+##############################################################################
+# role: upload
+#
+# O que faz: envia cada qcow2 para o storage domain do oVirt usando o CLI
+# `ovirt-img upload-disk` (pacote ovirt-imageio-client).
+#
+# Entrada:
+#   vm             — dict da VM (vars/vms.yml)
+#   vm_disk_items  — lista pré-calculada em tasks/migrate_one.yml, com
+#                    alias, UUID determinístico, caminho e flag de boot
+#   ovirt_auth     — sessão já autenticada (login feito em migrate_one.yml)
+#
+# Saída:     discos criados no oVirt, prontos para a role create_vm anexar
+# Onde roda: delegado ao host de virtualização (quem tem ovirt-img)
+#
+# IDEMPOTÊNCIA: antes de enviar, consultamos o engine pelo alias do disco.
+# Se já existe, pulamos — reenviar 100 GB por engano é caro.
+#
+# SOBRE O --insecure: o certificado do engine não traz o FQDN no SAN, então a
+# verificação de hostname falha. Enquanto o certificado não for corrigido,
+# ovirt_insecure=true é o que faz o upload passar. Para endurecer depois,
+# preencha ovirt_ca_file em group_vars/all.yml e mude ovirt_insecure para
+# false: a role passa a usar --cafile automaticamente.
+##############################################################################
+
+- name: "[upload] Validar as entradas da role"
+  ansible.builtin.assert:
+    that:
+      - vm_disk_items is defined
+      - vm_disk_items | length > 0
+      - ovirt_auth is defined
+    fail_msg: >-
+      A role `upload` espera `vm_disk_items` e `ovirt_auth`, produzidos por
+      tasks/migrate_one.yml. Não chame esta role isoladamente.
+    quiet: true
+
+- name: "[upload] Verificar no engine quais discos já existem"
+  # A busca usa a sintaxe de search do oVirt, onde `name` casa com o ALIAS
+  # do disco (o oVirt chama de "alias" na interface e de "name" na busca).
+  ovirt.ovirt.ovirt_disk_info:
+    auth: "{{ ovirt_auth }}"
+    pattern: "name={{ item.alias }}"
+  loop: "{{ vm_disk_items }}"
+  loop_control:
+    label: "{{ item.alias }}"
+  register: upload_existing
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[upload] Mostrar o plano de upload"
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.alias }} —
+      {{ 'JÁ EXISTE no oVirt, upload será pulado'
+         if (item.ovirt_disks | length) > 0
+         else 'será enviado a partir de ' ~ item.item.path }}
+  loop: "{{ upload_existing.results }}"
+  loop_control:
+    label: "{{ item.item.alias }}"
+
+# --------------------------------------------------------------------------
+# Bloco protegido: o arquivo de senha nasce aqui e é SEMPRE removido no
+# `always`, inclusive se o upload falhar no meio.
+# --------------------------------------------------------------------------
+- name: "[upload] Enviar discos para o storage domain"
+  block:
+
+    - name: "[upload] Criar arquivo temporário de senha (chmod 600)"
+      ansible.builtin.copy:
+        # Sem newline no final de propósito: o ovirt-img usa o conteúdo
+        # inteiro do arquivo como senha, e um "\n" sobrando quebraria o login.
+        content: "{{ ovirt_password }}"
+        dest: "{{ upload_password_file }}"
+        mode: "0600"
+      delegate_to: "{{ olvm_host }}"
+      no_log: true
+
+    - name: "[upload] ovirt-img upload-disk"
+      # O argv é montado como LISTA para não depender de shell: cada elemento
+      # é um argumento, sem risco de quebra por espaço no caminho.
+      # A senha nunca aparece na linha de comando — vai via --password-file.
+      ansible.builtin.command:
+        argv: >-
+          {{ ['ovirt-img', 'upload-disk',
+              '--engine-url', ovirt_engine_base_url,
+              '--username', ovirt_username,
+              '--password-file', upload_password_file]
+             + upload_tls_args
+             + ['--storage-domain', upload_storage_domain,
+                '--format', upload_disk_format,
+                '--disk-id', item.item.id,
+                '--name', item.item.alias,
+                '--description', 'Migrado do ESXi ' ~ esxi_host ~ ' (' ~ item.item.disk ~ '.vmdk)']
+             + (['--preallocated'] if (upload_preallocated | bool) else [])
+             + [item.item.path] }}
+      loop: "{{ upload_existing.results }}"
+      loop_control:
+        label: "{{ item.item.alias }}"
+      when: (item.ovirt_disks | length) == 0
+      # Quando esta task roda, ela realmente cria um disco no engine — logo é
+      # sempre "changed". A idempotência está no `when` acima, que consulta o
+      # engine antes: disco já existente não é reenviado.
+      changed_when: true
+      delegate_to: "{{ olvm_host }}"
+      async: "{{ upload_timeout }}"
+      poll: 30
+      # no_log porque a task manipula o caminho do arquivo de senha e a saída
+      # de erro do ovirt-img pode incluir cabeçalhos de autenticação.
+      no_log: true
+
+  always:
+    - name: "[upload] Remover o arquivo temporário de senha"
+      ansible.builtin.file:
+        path: "{{ upload_password_file }}"
+        state: absent
+      delegate_to: "{{ olvm_host }}"
+
+- name: "[upload] Confirmar que todos os discos existem no engine"
+  # O upload é assíncrono do lado do engine: o disco pode demorar alguns
+  # segundos para sair de "locked". Repetimos a consulta até aparecer.
+  ovirt.ovirt.ovirt_disk_info:
+    auth: "{{ ovirt_auth }}"
+    pattern: "name={{ item.alias }}"
+  loop: "{{ vm_disk_items }}"
+  loop_control:
+    label: "{{ item.alias }}"
+  register: upload_verify
+  changed_when: false
+  until: (upload_verify.ovirt_disks | default([]) | length) > 0
+  retries: 20
+  delay: 15
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[upload] Resumo dos discos no oVirt"
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.alias }} — id={{ item.ovirt_disks[0].id }},
+      status={{ item.ovirt_disks[0].status | default('n/a') }},
+      será_bootável={{ item.item.bootable }}
+  loop: "{{ upload_verify.results }}"
+  loop_control:
+    label: "{{ item.item.alias }}"

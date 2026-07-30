@@ -1,0 +1,32 @@
+##############################################################################
+# vault.yml.example — MODELO dos segredos. Este arquivo é versionado.
+#
+# Como usar:
+#   1. cp group_vars/vault.yml.example group_vars/vault.yml
+#   2. edite group_vars/vault.yml com os valores reais
+#   3. ansible-vault encrypt group_vars/vault.yml
+#
+# O group_vars/vault.yml está no .gitignore, mas depois de criptografado ele
+# PODERIA ser versionado com segurança. Mantemos fora do git de propósito:
+# num repo público, um vault vazado fica exposto a ataque de força bruta
+# offline para sempre.
+#
+# Detalhe importante de como este arquivo é carregado:
+# um arquivo chamado group_vars/vault.yml só seria automático se existisse um
+# GRUPO chamado "vault" no inventário. Como não existe, os playbooks o carregam
+# EXPLICITAMENTE via `vars_files:`. É proposital — deixa a origem do segredo
+# visível em vez de mágica.
+#
+# Convenção: todo segredo começa com `vault_` e é referenciado por uma
+# variável "limpa" em group_vars/all.yml (ex.: ovirt_password).
+# Isso facilita rastrear de onde cada segredo vem.
+##############################################################################
+
+# Senha do usuário da API do engine (admin@ovirt@internalsso).
+vault_ovirt_password: "TROQUE-PELA-SENHA-DO-ENGINE"
+
+# Senha SSH do ESXi de origem.
+# PREFIRA autenticação por chave pública: gere a chave no host de virtualização
+# (192.168.31.11) e instale em /etc/ssh/keys-root/authorized_keys no ESXi.
+# Com chave, deixe este valor como está — nada o usa.
+vault_esxi_ssh_password: "TROQUE-OU-USE-CHAVE-SSH"

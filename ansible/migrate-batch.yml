@@ -1,0 +1,103 @@
+---
+##############################################################################
+# migrate-batch.yml — migra VÁRIAS VMs, em sequência, a partir de vars/vms.yml.
+#
+# Uso:
+#   # todas as VMs de vars/vms.yml
+#   ansible-playbook migrate-batch.yml --vault-password-file ~/.vault-pass
+#
+#   # apenas algumas
+#   ansible-playbook migrate-batch.yml \
+#     -e '{"vms_filter": ["exemplo-linux-01", "exemplo-linux-02-uefi"]}' \
+#     --vault-password-file ~/.vault-pass
+#
+# Por que SEQUENCIAL e não paralelo: conversão e upload saturam disco e rede.
+# Rodar duas VMs de 200 GB ao mesmo tempo no mesmo NFS costuma ser mais lento
+# que uma depois da outra — e muito mais difícil de depurar quando falha.
+#
+# `any_errors_fatal: true` interrompe o lote na primeira falha, em vez de
+# deixar meia dúzia de VMs pela metade no storage domain.
+##############################################################################
+
+- name: "Migrar um lote de VMs do vCenter/ESXi para o OLVM"
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    # Vazio = migrar todas as VMs de vars/vms.yml.
+    vms_filter: []
+
+  vars_files:
+    - group_vars/vault.yml
+    - vars/vms.yml
+
+  pre_tasks:
+
+    - name: "Confirmar que a senha do engine veio do vault"
+      ansible.builtin.assert:
+        that:
+          - vault_ovirt_password is defined
+          - vault_ovirt_password != "TROQUE-PELA-SENHA-DO-ENGINE"
+        fail_msg: >-
+          vault_ovirt_password não foi definido ou continua com o valor de
+          exemplo. Veja group_vars/vault.yml.example.
+        quiet: true
+
+    - name: "Montar a fila de migração"
+      ansible.builtin.set_fact:
+        vms_to_migrate: >-
+          {{ vms | default([]) if (vms_filter | length) == 0
+             else (vms | default([]) | selectattr('name', 'in', vms_filter) | list) }}
+
+    - name: "Abortar se a fila ficou vazia"
+      ansible.builtin.assert:
+        that: (vms_to_migrate | length) > 0
+        fail_msg: >-
+          Nenhuma VM a migrar. Confira vars/vms.yml e o filtro vms_filter
+          ({{ vms_filter | join(', ') if vms_filter | length > 0 else 'sem filtro' }}).
+        quiet: true
+
+    # ---------------------------------------------------------------------
+    # GUARDA ANTI-JENKINS aplicada a TODA a fila, antes de começar.
+    # Falhar aqui é barato; falhar depois de migrar três VMs não é.
+    # ---------------------------------------------------------------------
+    - name: "GUARDA: recusar o lote se alguma VM tem nome proibido"
+      ansible.builtin.assert:
+        that:
+          - item.1 not in (item.0 | lower)
+        fail_msg: >-
+          ABORTADO: a VM '{{ item.0 }}' contém o termo proibido '{{ item.1 }}'.
+          A VM do Jenkins executa este pipeline e não pode entrar num lote.
+          Remova-a de vars/vms.yml ou use vms_filter para excluí-la.
+        quiet: true
+      loop: "{{ (vms_to_migrate | map(attribute='name') | list) | product(guard_forbidden_names) | list }}"
+      loop_control:
+        label: "{{ item.0 }} vs '{{ item.1 }}'"
+
+    - name: "Anunciar a fila"
+      ansible.builtin.debug:
+        msg:
+          - "VMs na fila ({{ vms_to_migrate | length }}), em ordem:"
+          - "{{ vms_to_migrate | map(attribute='name') | list }}"
+          - "A execução é sequencial e para na primeira falha (any_errors_fatal)."
+
+  tasks:
+
+    - name: "Migrar cada VM da fila"
+      ansible.builtin.include_tasks: tasks/migrate_one.yml
+      loop: "{{ vms_to_migrate }}"
+      loop_control:
+        # `vm` é a variável que tasks/migrate_one.yml e as roles esperam.
+        loop_var: vm
+        label: "{{ vm.name }}"
+
+  post_tasks:
+
+    - name: "Resumo do lote"
+      ansible.builtin.debug:
+        msg: >-
+          Lote concluído: {{ vms_to_migrate | map(attribute='name') | join(', ') }}.
+          As VMs foram criadas
+          {{ 'DESLIGADAS' if vm_state_after_create == 'present' else 'LIGADAS' }} —
+          valide cada uma antes de desligar a original no ESXi.

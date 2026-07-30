@@ -1,0 +1,106 @@
+---
+##############################################################################
+# precheck.yml — descobre no ESXi os dados que a migração precisa saber ANTES
+# de mexer em qualquer coisa: firmware, sistema operacional, CPU, memória e
+# quais arquivos .vmdk existem.
+#
+# Por que isso importa: o FIRMWARE é o que decide se a VM vai bootar no OLVM.
+# BIOS e UEFI não são intercambiáveis — se você criar a VM com o firmware
+# errado, ela sobe e não acha o disco de boot.
+#
+# COMO LER O RESULTADO:
+#   linha "firmware = efi"  -> a VM é UEFI    -> firmware: uefi  (q35_ovmf)
+#   NENHUMA linha firmware  -> a VM é BIOS    -> firmware: bios  (q35_sea_bios)
+# O VMware só escreve a linha `firmware` no .vmx quando é EFI. Saída vazia,
+# portanto, é resposta — não é erro.
+#
+# Este playbook é SOMENTE LEITURA: nada é alterado no ESXi.
+#
+# Uso:
+#   # uma VM específica
+#   ansible-playbook precheck.yml -e vm_name=exemplo-linux-01
+#   # todas as VMs de vars/vms.yml
+#   ansible-playbook precheck.yml
+#
+# Observação técnica: o ESXi roda BusyBox e não tem Python utilizável para
+# módulos Ansible. Por isso usamos exclusivamente o módulo `raw`, que só
+# manda a linha de comando pelo SSH.
+##############################################################################
+
+- name: "Precheck no ESXi de origem"
+  hosts: esxi
+  gather_facts: false
+  vars_files:
+    - vars/vms.yml
+
+  tasks:
+
+    - name: "[precheck] Alvo: apenas a VM informada em -e vm_name=..."
+      ansible.builtin.set_fact:
+        precheck_targets: "{{ [{'name': vm_name}] }}"
+      when: vm_name is defined
+
+    - name: "[precheck] Alvo: todas as VMs de vars/vms.yml"
+      ansible.builtin.set_fact:
+        precheck_targets: "{{ vms }}"
+      when: vm_name is not defined
+
+    - name: "[precheck] Localizar o .vmx de cada VM no datastore"
+      # O diretório vai entre aspas simples (pastas de VM do VMware costumam ter
+      # espaço no nome) e o glob *.vmx fica FORA delas, para o shell expandir.
+      ansible.builtin.raw: >-
+        ls -1 '{{ esxi_datastore_path }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null
+      loop: "{{ precheck_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: precheck_vmx
+      changed_when: false
+      failed_when: false
+
+    - name: "[precheck] Ler as linhas relevantes do .vmx"
+      # Um único grep traz tudo que interessa:
+      #   firmware    -> BIOS vs UEFI (ausente = BIOS)
+      #   guestOS     -> pista do sistema operacional (mapeia p/ operating_system)
+      #   numvcpus / cpuid.coresPerSocket / memSize -> hardware
+      #   displayName -> nome que a VM tinha no vCenter
+      ansible.builtin.raw: >-
+        grep -iE '^(firmware|guestOS|numvcpus|cpuid.coresPerSocket|memSize|displayName)'
+        '{{ esxi_datastore_path }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null
+      loop: "{{ precheck_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: precheck_vmx_info
+      changed_when: false
+      failed_when: false
+
+    - name: "[precheck] Listar os arquivos .vmdk (descritores e dados)"
+      ansible.builtin.raw: >-
+        ls -lh '{{ esxi_datastore_path }}/{{ item.esxi_folder | default(item.name) }}'/*.vmdk 2>/dev/null
+      loop: "{{ precheck_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: precheck_vmdk
+      changed_when: false
+      failed_when: false
+
+    - name: "[precheck] RELATÓRIO"
+      ansible.builtin.debug:
+        msg:
+          - "===== {{ item.0.item.name }} ====="
+          - "Pasta no datastore: {{ esxi_datastore_path }}/{{ item.0.item.esxi_folder | default(item.0.item.name) }}"
+          - "Arquivo .vmx encontrado: {{ 'SIM' if (item.0.stdout | trim | length) > 0 else 'NÃO — confira o nome da pasta!' }}"
+          - "Configuração lida do .vmx:"
+          - "{{ item.1.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list }}"
+          - >-
+            FIRMWARE DETECTADO:
+            {{ 'uefi  -> use firmware: uefi  (bios_type q35_ovmf)'
+               if (item.1.stdout | default('') | lower is search('firmware'))
+               else 'bios  -> use firmware: bios  (bios_type q35_sea_bios)' }}
+          - "Arquivos de disco:"
+          - "{{ item.2.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list }}"
+          - >-
+            LEMBRETE: cada disco são DOIS arquivos (nome.vmdk + nome{{ '-flat' }}.vmdk).
+            Em vars/vms.yml liste apenas o nome base, sem extensão e sem sufixo.
+      loop: "{{ precheck_vmx.results | zip(precheck_vmx_info.results, precheck_vmdk.results) | list }}"
+      loop_control:
+        label: "{{ item.0.item.name }}"

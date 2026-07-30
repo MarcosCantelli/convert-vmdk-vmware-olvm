@@ -1,0 +1,21 @@
+---
+##############################################################################
+# roles/extract/defaults/main.yml
+#
+# Variáveis compartilhadas com outras roles (vm_workdir, esxi_vm_path,
+# esxi_use_ssh_password, esxi_ssh_extra_opts) ficam em group_vars/all.yml —
+# definidas uma única vez, em vez de repetidas no default de cada role.
+# Aqui ficam apenas as que pertencem SÓ a esta role.
+##############################################################################
+
+# Sufixo do arquivo de DADOS do disco VMware.
+# Disco "thick"/eager-zeroed usa "-flat"; alguns layouts thin usam "-sparse"
+# ou fragmentam em "-s001", "-s002"... Se sua VM usar outro padrão, ajuste.
+extract_data_suffix: "-flat"
+
+# Timeout (segundos) das operações longas: cópia e conversão de disco.
+# 6 horas cobre discos grandes em NFS de 1 GbE. Aumente se necessário.
+extract_async_timeout: 21600
+
+# Intervalo de polling durante as operações longas.
+extract_async_poll: 30

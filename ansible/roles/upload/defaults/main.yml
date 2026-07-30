@@ -1,0 +1,30 @@
+---
+##############################################################################
+# roles/upload/defaults/main.yml
+##############################################################################
+
+# vm_workdir vem de group_vars/all.yml (compartilhado com extract e fix_network).
+
+# Arquivo temporário com a senha do engine, criado com chmod 600 e removido
+# no bloco `always`. Usamos arquivo em vez de passar a senha na linha de
+# comando porque o `--password-file` do ovirt-img evita que a senha apareça
+# na lista de processos (`ps aux`) do host.
+upload_password_file: "{{ vm_workdir }}/.engine-pass"
+
+# Formato do disco criado no oVirt. qcow2 = thin provision (cow).
+upload_disk_format: qcow2
+
+# Storage domain de destino (pode ser sobrescrito por VM em vars/vms.yml).
+upload_storage_domain: "{{ vm.storage_domain | default(ovirt_storage_domain) }}"
+
+# Timeout do upload (segundos). Discos grandes em NFS 1 GbE são lentos.
+upload_timeout: 21600
+
+# true  = disco pré-alocado (obrigatório para formato raw em storage de bloco)
+# false = esparso/thin (padrão, recomendado com qcow2 sobre NFS)
+upload_preallocated: false
+
+# Argumentos TLS do ovirt-img, escolhidos conforme ovirt_insecure.
+# São mutuamente exclusivos: ou confiamos sem verificar, ou apontamos o CA.
+upload_tls_args: >-
+  {{ ['--insecure'] if (ovirt_insecure | bool) else ['--cafile', ovirt_ca_file] }}

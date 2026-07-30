@@ -1,0 +1,195 @@
+// ============================================================================
+// Jenkinsfile.provision — pipeline de PROVISIONAMENTO (Terraform no OLVM)
+//
+// Fluxo: init -> validate -> plan -> APROVAÇÃO MANUAL -> apply
+//
+// A aprovação manual existe porque `apply` cria e destrói recursos de verdade.
+// Ninguém deve conseguir remover uma VM por engano só clicando em "Build".
+//
+// CREDENCIAIS que precisam existir no Jenkins:
+//   * olvm-api-password  (tipo "Secret text")
+//       senha de admin@ovirt@internalsso; exposta ao Terraform como
+//       TF_VAR_ovirt_password
+//   * olvm-tfvars        (tipo "Secret file", OPCIONAL)
+//       terraform.tfvars com os UUIDs do ambiente (cluster, storage domain,
+//       vNIC profile). Sem esta credential, o pipeline usa o
+//       terraform.tfvars do repositório, se existir.
+//
+// ESTADO DO TERRAFORM: este pipeline usa o backend local (terraform.tfstate no
+// workspace), que NÃO sobrevive à limpeza do workspace. Antes de usar isto
+// para valer, configure um backend remoto. Veja docs/provisioning.md.
+// ============================================================================
+
+pipeline {
+
+  agent any
+
+  options {
+    timeout(time: 2, unit: 'HOURS')
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+
+  parameters {
+    choice(
+      name: 'ACTION',
+      choices: ['plan', 'apply', 'destroy'],
+      description: 'plan = só mostra o que mudaria. apply/destroy exigem aprovação manual.'
+    )
+    string(
+      name: 'TARGET',
+      defaultValue: '',
+      description: 'Opcional: limita a uma VM, ex.: module.vm["app-teste-01"]. Vazio = todas.'
+    )
+    booleanParam(
+      name: 'AUTO_APPROVE',
+      defaultValue: false,
+      description: 'Pular a aprovação manual. Use apenas em ambiente de teste.'
+    )
+  }
+
+  environment {
+    TF_DIR = 'terraform'
+    // Terraform não é interativo em CI.
+    TF_IN_AUTOMATION = '1'
+    TF_INPUT = '0'
+    TF_CLI_ARGS = '-no-color'
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        checkout scm
+        script {
+          currentBuild.displayName = "#${BUILD_NUMBER} ${params.ACTION}"
+        }
+      }
+    }
+
+    stage('Terraform init & validate') {
+      steps {
+        dir("${env.TF_DIR}") {
+          sh '''
+            set -eu
+            terraform version
+            terraform init -input=false
+            terraform fmt -check -recursive
+            terraform validate
+          '''
+        }
+      }
+    }
+
+    stage('Terraform plan') {
+      steps {
+        dir("${env.TF_DIR}") {
+          // A senha entra como TF_VAR_ovirt_password: variável de ambiente,
+          // nunca em arquivo. O Jenkins mascara o valor no log.
+          withCredentials([string(credentialsId: 'olvm-api-password', variable: 'TF_VAR_ovirt_password')]) {
+            script {
+              // Traz o terraform.tfvars da credential, se ela existir.
+              def tfvarsArg = ''
+              try {
+                withCredentials([file(credentialsId: 'olvm-tfvars', variable: 'TFVARS_FILE')]) {
+                  sh 'cp "$TFVARS_FILE" ./jenkins.auto.tfvars'
+                }
+                tfvarsArg = '-var-file=jenkins.auto.tfvars'
+                echo 'Usando os UUIDs da credential olvm-tfvars.'
+              } catch (ignored) {
+                echo 'Credential olvm-tfvars não encontrada — usando o terraform.tfvars do repositório, se houver.'
+              }
+
+              def targetArg = params.TARGET?.trim() ? "-target='${params.TARGET.trim()}'" : ''
+              def destroyArg = (params.ACTION == 'destroy') ? '-destroy' : ''
+
+              // -out grava o plano: o apply executa EXATAMENTE o que foi
+              // aprovado, sem recalcular (evita surpresa entre plan e apply).
+              sh """
+                set -eu
+                terraform plan ${destroyArg} ${tfvarsArg} ${targetArg} -out=tfplan
+                terraform show -no-color tfplan > tfplan.txt
+              """
+
+              archiveArtifacts artifacts: 'tfplan.txt', fingerprint: true
+              // Mostra um resumo no log para quem vai aprovar.
+              sh 'grep -E "^(Plan:|No changes|Terraform will perform)" tfplan.txt || true'
+            }
+          }
+        }
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // APROVAÇÃO MANUAL — obrigatória para apply e destroy.
+    // O timeout evita build pendurado para sempre esperando alguém.
+    // ----------------------------------------------------------------------
+    stage('Aprovação manual') {
+      when {
+        allOf {
+          expression { params.ACTION in ['apply', 'destroy'] }
+          expression { !params.AUTO_APPROVE }
+        }
+      }
+      steps {
+        timeout(time: 30, unit: 'MINUTES') {
+          script {
+            def plano = readFile("${env.TF_DIR}/tfplan.txt")
+            // Mostra o começo do plano na tela de aprovação.
+            def resumo = plano.readLines().take(60).join('\n')
+
+            input(
+              message: "Revise o plano e confirme o ${params.ACTION.toUpperCase()} no OLVM:",
+              ok: "Executar ${params.ACTION}",
+              parameters: [
+                text(name: 'PLANO', defaultValue: resumo, description: 'Início do plano (completo em tfplan.txt, nos artefatos)')
+              ]
+            )
+          }
+        }
+      }
+    }
+
+    stage('Terraform apply') {
+      when { expression { params.ACTION in ['apply', 'destroy'] } }
+      steps {
+        dir("${env.TF_DIR}") {
+          withCredentials([string(credentialsId: 'olvm-api-password', variable: 'TF_VAR_ovirt_password')]) {
+            // Aplica o plano salvo — o mesmo que foi revisado e aprovado.
+            sh '''
+              set -eu
+              terraform apply -input=false tfplan
+              terraform output -json > outputs.json
+            '''
+            archiveArtifacts artifacts: 'outputs.json', fingerprint: true
+            sh 'terraform output || true'
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      dir("${env.TF_DIR}") {
+        // O plano binário pode conter valores sensíveis em texto claro, e o
+        // tfvars veio de credential: nada disso fica no workspace.
+        sh 'rm -f tfplan jenkins.auto.tfvars || true'
+      }
+    }
+    success {
+      echo "Terraform ${params.ACTION} concluído. Veja outputs.json nos artefatos."
+    }
+    failure {
+      echo """
+        Terraform ${params.ACTION} FALHOU.
+        Cheque primeiro:
+          * a senha em olvm-api-password (usuário admin@ovirt@internalsso)
+          * os UUIDs de cluster/storage domain/vNIC profile
+            (liste com terraform/scripts/get-ovirt-ids.sh)
+          * se o agente resolve olvm.mvrc.local (/etc/hosts)
+      """.stripIndent()
+    }
+  }
+}
