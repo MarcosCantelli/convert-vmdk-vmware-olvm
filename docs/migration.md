@@ -78,9 +78,27 @@ existir:
 
 ```bash
 ssh mvrc@192.168.31.11
-ls ~/.ssh/id_*.pub || ssh-keygen -t ed25519 -N '' -C 'mvrc@olvm-host-01 migracao'
-cat ~/.ssh/id_ed25519.pub    # copie esta linha inteira
+ls ~/.ssh/id_rsa.pub || ssh-keygen -t rsa -b 4096 -N '' -f ~/.ssh/id_rsa -C 'mvrc@olvm-host-01 migracao'
+cat ~/.ssh/id_rsa.pub    # copie esta linha inteira
 ```
+
+> **RSA, e não ed25519 — isto não é preferência de estilo.** O ESXi 6.7 roda o
+> sshd em **modo FIPS**, que só aceita algoritmos homologados. Uma chave
+> ed25519 é instalada sem erro nenhum, o cliente a oferece normalmente e o
+> servidor recusa em silêncio: você vê apenas
+> `Permission denied (publickey,keyboard-interactive)` e passa horas conferindo
+> permissão de arquivo à toa.
+>
+> O motivo real só aparece no `/var/log/auth.log` **do ESXi**:
+> ```
+> sshd: FIPS mode initialized
+> sshd: userauth_pubkey: key type ssh-ed25519 not in PubkeyAcceptedKeyTypes
+> ```
+> Guarde este endereço: sempre que a chave parecer perfeita e ainda assim for
+> recusada, o log do lado do servidor é o primeiro lugar para olhar.
+>
+> `-N ''` cria a chave sem passphrase, de propósito: o Jenkins não tem como
+> digitar senha de chave.
 
 **Passo 3 — autorize essa chave no ESXi.** O ESXi **não** usa
 `~/.ssh/authorized_keys` como o Linux: o arquivo do root fica em
@@ -88,8 +106,22 @@ cat ~/.ssh/id_ed25519.pub    # copie esta linha inteira
 
 ```bash
 # Vai pedir a senha do root do ESXi — esta é a única vez.
-cat ~/.ssh/id_ed25519.pub | ssh root@192.168.31.12 \
+cat ~/.ssh/id_rsa.pub | ssh root@192.168.31.12 \
   "cat >> /etc/ssh/keys-root/authorized_keys && chmod 600 /etc/ssh/keys-root/authorized_keys"
+```
+
+Se o teste do Passo 5 falhar com `no mutual signature algorithm`, é o cliente
+(Oracle Linux 8) recusando assinatura RSA com SHA-1. Libere só para este host,
+no `~/.ssh/config` **do 31.11**:
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+
+Host 192.168.31.12
+    User root
+    PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+chmod 600 ~/.ssh/config
 ```
 
 Não use `ssh-copy-id`: ele escreve em `~/.ssh/authorized_keys`, que no ESXi é
@@ -369,6 +401,9 @@ Para migrá-la, faça à mão, com o pipeline parado:
 | Upload trava/expira | disco grande em NFS 1 GbE | aumente `upload_timeout` |
 | Metadados do storage domain corrompidos | escreveu dentro da pasta com UUID | trabalhe em `/mnt/sd1/migracao` |
 | `Permission denied` no scp do ESXi | sem chave SSH | `authorized_keys` em `/etc/ssh/keys-root/` no ESXi |
+| `Permission denied` **mesmo com a chave instalada** | ESXi 6.7 em modo FIPS recusa ed25519 | use chave **RSA** (`ssh-keygen -t rsa -b 4096`); confirme em `/var/log/auth.log` do ESXi |
+| `no mutual signature algorithm` | cliente OL8 recusa RSA com SHA-1 | `PubkeyAcceptedKeyTypes +ssh-rsa` no `~/.ssh/config` do host, só para o IP do ESXi |
+| Chave some depois de reiniciar o ESXi | config do ESXi vive em ramdisk | rode `/sbin/auto-backup.sh` após instalar |
 
 ## 10. Fazendo à mão (quando precisar entender ou depurar)
 
