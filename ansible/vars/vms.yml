@@ -19,49 +19,47 @@
 #   storage_domain    opcional, sobrescreve ovirt_storage_domain
 #
 # ---------------------------------------------------------------------------
-# DUAS COISAS PARA CONFERIR ANTES DE RODAR EM CADA VM
+# ORIGEM DOS DADOS DESTE ARQUIVO (tudo verificado, nada suposto)
 # ---------------------------------------------------------------------------
-# 1) FIRMWARE. Não aparece na aba "Virtual Hardware" do vCenter — está em
-#    VM Options > Boot Options. Os valores abaixo são SUPOSIÇÃO e o firmware
-#    errado faz a VM ligar sem achar o disco de boot. Confirme com:
-#       ansible-playbook precheck.yml
-#    (sem -e vm_name, ele roda em todas as VMs deste arquivo)
+# * datastore e pasta -> `vim-cmd vmsvc/getallvms` no ESXi
+# * firmware, CPU, memória, SO e nomes de disco -> `ansible-playbook precheck.yml`
 #
-# 2) NOME DOS ARQUIVOS .vmdk. O datastore e a pasta de cada VM abaixo vieram
-#    do `vim-cmd vmsvc/getallvms` do próprio ESXi, então estão corretos. Já os
-#    nomes dos discos foram DEDUZIDOS do nome do .vmx — o precheck lista os
-#    .vmdk de verdade. Se divergir, ajuste `disks`.
+# FIRMWARE: as 6 são BIOS. Nenhum .vmx tem a linha `firmware`, e o VMware só a
+# escreve quando é EFI. Ao acrescentar uma VM nova aqui, rode o precheck antes:
+# firmware errado faz a VM ligar sem achar o disco de boot.
 #
-#    Repare no caso MySQL_HO: a VM se chama MySQL_HO (underscore) mas mora na
-#    pasta MySQL-HO (hífen). VM renomeada no vCenter mantém o nome ANTIGO nos
-#    arquivos. É por isso que `esxi_folder` existe.
+# Repare no caso MySQL_HO: a VM se chama MySQL_HO (underscore) mas mora na
+# pasta MySQL-HO (hífen). VM renomeada no vCenter mantém o nome ANTIGO nos
+# arquivos — é por isso que `esxi_folder` existe.
 ##############################################################################
 
 vms:
 
   # =========================================================================
-  # UBUNTU SERVER — prontas para migrar (confirme firmware e nomes de arquivo)
+  # UBUNTU SERVER 24.04 — dados confirmados no precheck, prontas para migrar
   # =========================================================================
 
+  # Ubuntu 24.04.4 · disco 20 GB (confirmado no precheck)
   - name: App-Server-HO
     esxi_datastore: VS2_HD2_1TB
     esxi_folder: App-Server-HO
     disks:
       - App-Server-HO
-    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    firmware: bios              # CONFIRMADO: .vmx sem linha firmware = BIOS
     operating_system: other_linux
     cpu_sockets: 1
-    cpu_cores: 2               # vCenter mostrava 2 vCPU
+    cpu_cores: 2
     cpu_threads: 1
     memory_gib: 4
     fix_network: true
 
+  # Ubuntu 24.04.4 · disco 20 GB (confirmado no precheck)
   - name: App-Server-PRD
     esxi_datastore: VS2_HD2_1TB
     esxi_folder: App-Server-PRD
     disks:
       - App-Server-PRD
-    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    firmware: bios              # CONFIRMADO: .vmx sem linha firmware = BIOS
     operating_system: other_linux
     cpu_sockets: 1
     cpu_cores: 2
@@ -69,12 +67,13 @@ vms:
     memory_gib: 4
     fix_network: true
 
+  # Ubuntu 24.04.3 · disco 16 GB (confirmado no precheck)
   - name: MySQL-HO2
     esxi_datastore: VS2_HD1_1TB
     esxi_folder: MySQL-HO2
     disks:
       - MySQL-HO2
-    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    firmware: bios              # CONFIRMADO: .vmx sem linha firmware = BIOS
     operating_system: other_linux
     cpu_sockets: 1
     cpu_cores: 2
@@ -82,25 +81,27 @@ vms:
     memory_gib: 4
     fix_network: true
 
+  # Ubuntu 24.04.3 · disco 80 GB (confirmado no precheck)
   - name: MySQL_HO
     esxi_datastore: VS2_HD2_1TB
     esxi_folder: MySQL-HO
     disks:
       - MySQL-HO
-    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    firmware: bios              # CONFIRMADO: .vmx sem linha firmware = BIOS
     operating_system: other_linux
     cpu_sockets: 1
-    cpu_cores: 4               # vCenter mostrava 4 vCPU
+    cpu_cores: 4
     cpu_threads: 1
     memory_gib: 8
     fix_network: true
 
+  # Ubuntu 24.04.3 · disco 25 GB (confirmado no precheck)
   - name: reiCar_TH
     esxi_datastore: VS2_HD2_1TB
     esxi_folder: reiCar_TH
     disks:
       - reiCar_TH
-    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    firmware: bios              # CONFIRMADO: .vmx sem linha firmware = BIOS
     operating_system: other_linux
     cpu_sockets: 1
     cpu_cores: 2
@@ -108,12 +109,13 @@ vms:
     memory_gib: 4
     fix_network: true
 
+  # Ubuntu 24.04.3 · disco 25 GB (confirmado no precheck)
   - name: reiCar_TH2
     esxi_datastore: VS2_HD1_1TB
     esxi_folder: reiCar_TH2
     disks:
       - reiCar_TH2
-    firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
+    firmware: bios              # CONFIRMADO: .vmx sem linha firmware = BIOS
     operating_system: other_linux
     cpu_sockets: 1
     cpu_cores: 2
