@@ -72,14 +72,20 @@
   # O prefixo esxi_scp_argv vem de group_vars/all.yml e já resolve chave SSH
   # ou sshpass, conforme esxi_use_ssh_password.
   #
-  # As aspas simples dentro do caminho REMOTO não são decoração: o scp entrega
-  # o caminho remoto a um shell no ESXi, que separaria por espaço. Pastas de VM
-  # do VMware costumam ter espaço no nome ("Minha VM"), então quotamos.
+  # SEM ASPAS no caminho remoto — e isso é o oposto do que fazemos no
+  # precheck.yml, de propósito:
+  #   * lá usamos `ssh host "cmd '/caminho'/*.vmx"`. Existe um shell remoto,
+  #     que consome as aspas e protege espaços no nome.
+  #   * aqui é `scp`, que interpreta o caminho pelo próprio parser, sem shell.
+  #     Aspas viram PARTE DO NOME e o erro sai como
+  #     `scp: '/vmfs/...': No such file or directory` — arquivo que existe.
+  # Consequência aceita: pasta de VM com espaço no nome não funciona por esta
+  # via. Nenhuma das VMs deste ambiente tem, e o precheck avisaria antes.
   ansible.builtin.command:
     argv: >-
       {{ esxi_scp_argv
-         + [esxi_user ~ '@' ~ esxi_host ~ ":'" ~ esxi_vm_path ~ '/' ~ item.item ~ ".vmdk'",
-            esxi_user ~ '@' ~ esxi_host ~ ":'" ~ esxi_vm_path ~ '/' ~ item.item ~ extract_data_suffix ~ ".vmdk'",
+         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item.item ~ '.vmdk',
+            esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item.item ~ extract_data_suffix ~ '.vmdk',
             vm_workdir ~ '/'] }}
     creates: "{{ vm_workdir }}/{{ item.item }}{{ extract_data_suffix }}.vmdk"
   loop: "{{ extract_qcow2_stat.results }}"
