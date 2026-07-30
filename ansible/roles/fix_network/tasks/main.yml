@@ -59,11 +59,16 @@
   # `netplan generate || true` valida a sintaxe já dentro da imagem; o
   #   `|| true` evita quebrar a migração em distros sem netplan (RHEL/Oracle
   #   Linux usam NetworkManager e simplesmente ignoram o arquivo).
+  #
+  # O loop percorre `fix_network_disks` (nomes de disco), e NÃO o resultado do
+  # stat acima. Iterar sobre resultados de outra task aninha `item` dentro de
+  # `item` e a task seguinte precisaria de `item.item.item` para chegar ao
+  # nome — receita de erro. Aqui `item` é simplesmente o nome do disco.
   ansible.builtin.command:
     argv:
       - virt-customize
       - "-a"
-      - "{{ vm_workdir }}/{{ item.item }}.qcow2"
+      - "{{ vm_workdir }}/{{ item }}.qcow2"
       - "--upload"
       - "{{ vm_workdir }}/{{ fix_network_netplan_file }}:/etc/netplan/{{ fix_network_netplan_file }}"
       - "--run-command"
@@ -75,10 +80,8 @@
   environment:
     LIBGUESTFS_BACKEND: direct
   args:
-    creates: "{{ vm_workdir }}/.{{ item.item }}.netfix.done"
-  loop: "{{ fix_network_qcow2.results }}"
-  loop_control:
-    label: "{{ item.item }}"
+    creates: "{{ vm_workdir }}/.{{ item }}.netfix.done"
+  loop: "{{ fix_network_disks }}"
   register: fix_network_result
   delegate_to: "{{ olvm_host }}"
   async: "{{ fix_network_timeout }}"
