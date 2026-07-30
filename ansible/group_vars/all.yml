@@ -81,6 +81,31 @@ esxi_ssh_extra_opts:
   - "UserKnownHostsFile=/dev/null"
 
 # ---------------------------------------------------------------------------
+# Como falamos com o ESXi
+#
+# REGRA: NADA conecta no ESXi direto do runner/estação. Todo acesso sai do host
+# de virtualização (192.168.31.11). Assim existe UMA única chave SSH para
+# instalar — a do usuário do 31.11 autorizada em /etc/ssh/keys-root/
+# authorized_keys no ESXi — em vez de uma por máquina que roda Ansible.
+#
+# esxi_ssh_cmd  -> string, para EXECUTAR comando no ESXi (precisa de shell por
+#                  causa de globs e redirecionamentos: '*.vmx', 2>/dev/null)
+# esxi_scp_argv -> lista, prefixo do scp (argv evita shell na cópia longa)
+# ---------------------------------------------------------------------------
+esxi_ssh_cmd: >-
+  {{ ('sshpass -p ' ~ (vault_esxi_ssh_password | default('') | quote) ~ ' ssh')
+     if (esxi_use_ssh_password | bool)
+     else 'ssh -o BatchMode=yes' }}
+  {{ esxi_ssh_extra_opts | join(' ') }} {{ esxi_user }}@{{ esxi_host }}
+
+esxi_scp_argv: >-
+  {{ (['sshpass', '-p', vault_esxi_ssh_password | default('')]
+      if (esxi_use_ssh_password | bool) else [])
+     + ['scp']
+     + ([] if (esxi_use_ssh_password | bool) else ['-B'])
+     + esxi_ssh_extra_opts }}
+
+# ---------------------------------------------------------------------------
 # Área de trabalho da migração
 # ---------------------------------------------------------------------------
 # REGRA IMPORTANTE aprendida na migração manual: trabalhe numa pasta IRMÃ,
