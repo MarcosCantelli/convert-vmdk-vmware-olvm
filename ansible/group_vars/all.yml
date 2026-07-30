@@ -58,13 +58,21 @@ esxi_host: 192.168.31.12
 esxi_user: root
 esxi_datastore: VS2_HD2_1TB
 
-# PLACEHOLDER: no ESXi os datastores ficam sob /vmfs/volumes/<nome>.
-# Se o seu layout for diferente, ajuste aqui.
+# No ESXi os datastores ficam sob /vmfs/volumes/<nome>.
 esxi_datastore_path: "/vmfs/volumes/{{ esxi_datastore }}"
 
-# Caminho da VM dentro do datastore. Depende da variável `vm`, resolvida em
-# tempo de execução (por isso mora aqui e não nos defaults das roles).
-esxi_vm_path: "{{ esxi_datastore_path }}/{{ vm.esxi_folder | default(vm.name) }}"
+# Datastore desta VM. O ambiente tem MAIS DE UM (VS2_HD2_1TB e VS2_HD1_1TB),
+# então cada VM pode sobrescrever com `esxi_datastore:` em vars/vms.yml.
+esxi_vm_datastore: "{{ vm.esxi_datastore | default(esxi_datastore) }}"
+
+# Caminho completo da VM na origem. Duas coisas variam por VM e as duas têm
+# override, porque descobrimos que nenhuma das duas é confiável por convenção:
+#   * o datastore (as VMs estão espalhadas em dois)
+#   * o nome da pasta (VM renomeada mantém o nome ANTIGO nos arquivos —
+#     ex.: a VM "MySQL_HO" mora na pasta "MySQL-HO")
+# Depende de `vm`, resolvida em tempo de execução, por isso mora aqui e não
+# nos defaults das roles.
+esxi_vm_path: "/vmfs/volumes/{{ esxi_vm_datastore }}/{{ vm.esxi_folder | default(vm.name) }}"
 
 # Autenticação no ESXi para a cópia dos discos.
 # false (recomendado) = chave SSH pública instalada no ESXi

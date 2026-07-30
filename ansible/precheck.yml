@@ -74,7 +74,7 @@
       ansible.builtin.shell:
         cmd: >-
           {{ esxi_ssh_cmd }}
-          "ls -1 '{{ esxi_datastore_path }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
+          "ls -1 '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
       loop: "{{ precheck_targets }}"
       loop_control:
         label: "{{ item.name }}"
@@ -97,7 +97,7 @@
           {{ esxi_ssh_cmd }}
           "grep -i -e '^firmware' -e '^guestOS' -e '^numvcpus'
           -e '^cpuid.coresPerSocket' -e '^memSize' -e '^displayName'
-          '{{ esxi_datastore_path }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
+          '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
       loop: "{{ precheck_targets }}"
       loop_control:
         label: "{{ item.name }}"
@@ -109,7 +109,7 @@
       ansible.builtin.shell:
         cmd: >-
           {{ esxi_ssh_cmd }}
-          "ls -lh '{{ esxi_datastore_path }}/{{ item.esxi_folder | default(item.name) }}'/*.vmdk 2>/dev/null || true"
+          "ls -lh '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmdk 2>/dev/null || true"
       loop: "{{ precheck_targets }}"
       loop_control:
         label: "{{ item.name }}"
@@ -121,7 +121,7 @@
       ansible.builtin.debug:
         msg:
           - "===== {{ item.0.item.name }} ====="
-          - "Pasta no datastore: {{ esxi_datastore_path }}/{{ item.0.item.esxi_folder | default(item.0.item.name) }}"
+          - "Origem: [{{ item.0.item.esxi_datastore | default(esxi_datastore) }}] {{ item.0.item.esxi_folder | default(item.0.item.name) }}"
           - "Arquivo .vmx encontrado: {{ 'SIM' if (item.0.stdout | trim | length) > 0 else 'NAO — confira o nome da pasta!' }}"
           - "Configuração lida do .vmx:"
           - "{{ item.1.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list }}"

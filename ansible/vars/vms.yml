@@ -27,10 +27,14 @@
 #       ansible-playbook precheck.yml
 #    (sem -e vm_name, ele roda em todas as VMs deste arquivo)
 #
-# 2) NOME DOS ARQUIVOS .vmdk e DA PASTA. Assumi que a pasta e o disco têm o
-#    mesmo nome da VM, que é o padrão do vCenter — mas VM renomeada mantém o
-#    nome ANTIGO nos arquivos. O precheck lista os .vmdk de verdade; se
-#    divergir, ajuste `esxi_folder` e `disks`.
+# 2) NOME DOS ARQUIVOS .vmdk. O datastore e a pasta de cada VM abaixo vieram
+#    do `vim-cmd vmsvc/getallvms` do próprio ESXi, então estão corretos. Já os
+#    nomes dos discos foram DEDUZIDOS do nome do .vmx — o precheck lista os
+#    .vmdk de verdade. Se divergir, ajuste `disks`.
+#
+#    Repare no caso MySQL_HO: a VM se chama MySQL_HO (underscore) mas mora na
+#    pasta MySQL-HO (hífen). VM renomeada no vCenter mantém o nome ANTIGO nos
+#    arquivos. É por isso que `esxi_folder` existe.
 ##############################################################################
 
 vms:
@@ -40,6 +44,8 @@ vms:
   # =========================================================================
 
   - name: App-Server-HO
+    esxi_datastore: VS2_HD2_1TB
+    esxi_folder: App-Server-HO
     disks:
       - App-Server-HO
     firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
@@ -51,6 +57,8 @@ vms:
     fix_network: true
 
   - name: App-Server-PRD
+    esxi_datastore: VS2_HD2_1TB
+    esxi_folder: App-Server-PRD
     disks:
       - App-Server-PRD
     firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
@@ -62,6 +70,8 @@ vms:
     fix_network: true
 
   - name: MySQL-HO2
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: MySQL-HO2
     disks:
       - MySQL-HO2
     firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
@@ -73,8 +83,10 @@ vms:
     fix_network: true
 
   - name: MySQL_HO
+    esxi_datastore: VS2_HD2_1TB
+    esxi_folder: MySQL-HO
     disks:
-      - MySQL_HO
+      - MySQL-HO
     firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
     operating_system: other_linux
     cpu_sockets: 1
@@ -84,6 +96,8 @@ vms:
     fix_network: true
 
   - name: reiCar_TH
+    esxi_datastore: VS2_HD2_1TB
+    esxi_folder: reiCar_TH
     disks:
       - reiCar_TH
     firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
@@ -95,6 +109,8 @@ vms:
     fix_network: true
 
   - name: reiCar_TH2
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: reiCar_TH2
     disks:
       - reiCar_TH2
     firmware: bios              # SUPOSIÇÃO — confirmar com precheck.yml
@@ -131,6 +147,8 @@ vms:
   # =========================================================================
 
   # - name: Win_Server_25
+  #   esxi_datastore: VS2_HD1_1TB
+  #   esxi_folder: Win_Server_25
   #   disks:
   #     - Win_Server_25
   #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
@@ -144,6 +162,8 @@ vms:
   #   fix_network: false          # netplan não existe no Windows
 
   # - name: Win_Server_SQL_LAB
+  #   esxi_datastore: VS2_HD1_1TB
+  #   esxi_folder: Win_Server_SQL_LAB
   #   # BLOQUEADA: tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
   #   disks:
   #     - Win_Server_SQL_LAB
@@ -158,6 +178,8 @@ vms:
   #   fix_network: false
 
   # - name: WinServer22_AD
+  #   esxi_datastore: VS2_HD1_1TB
+  #   esxi_folder: WinServer22_AD
   #   # BLOQUEADA: tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
   #   # Cuidado extra: é controlador de domínio. Migrar DC exige desligamento
   #   # limpo (não snapshot/clone a quente) para não corromper o AD.
@@ -172,6 +194,25 @@ vms:
   #   disk_interface: sata
   #   nic_interface: e1000
   #   fix_network: false
+
+  # =========================================================================
+  # O QUE EXISTE NO ESXi E NÃO ENTRA NESTA LISTA (e por quê)
+  #
+  # Levantado com `vim-cmd vmsvc/getallvms` no ESXi. Documentado aqui para
+  # que ninguém precise redescobrir depois por que uma VM "está faltando".
+  #
+  #   Jenkins           [VS2_HD1_1TB]  já migrada. E, mesmo que não estivesse,
+  #                                    ela executa este pipeline: os playbooks
+  #                                    abortam se "jenkins" aparecer no nome.
+  #   App-Server-DEV    [VS2_HD2_1TB]  já migrada manualmente
+  #   Ubuntu-Terraform  [VS2_HD2_1TB]  é TEMPLATE, não VM. Template tem outro
+  #                                    caminho: vira template no OLVM, não VM
+  #   VCenter           [ESXI_2]       é o próprio vCenter que gerencia o ESXi
+  #                                    de origem. Migrar derruba a origem
+  #   vCLS-<uuid>       [VS2_HD2_1TB]  vSphere Cluster Services: VM de serviço
+  #                                    criada e gerenciada pelo vCenter. Ele a
+  #                                    recria sozinho; migrar não faz sentido
+  # =========================================================================
 
 ##############################################################################
 # NOTA SOBRE operating_system
