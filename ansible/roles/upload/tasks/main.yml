@@ -80,6 +80,18 @@
       # O argv é montado como LISTA para não depender de shell: cada elemento
       # é um argumento, sem risco de quebra por espaço no caminho.
       # A senha nunca aparece na linha de comando — vai via --password-file.
+      # ATENÇÃO ao mexer nas flags: use só as que o SEU binário lista em
+      # `ovirt-img upload-disk --help`. A versão do ovirt-imageio empacotada
+      # no Oracle Linux 8 é mais antiga que o código do branch master, e a
+      # documentação online descreve opções que ela não tem. Exemplo real:
+      # `--description` não existe aqui, e o efeito não é "opção inválida" —
+      # o texto escorrega para o argumento posicional e o erro sai como
+      #   error: argument filename: invalid File value: 'Migrado do ESXi ...'
+      # A descrição do disco é aplicada depois, pelo módulo ovirt_disk na role
+      # create_vm, que a aceita.
+      #
+      # -s e -f (e não --storage-domain/--format) porque são as formas que o
+      # usage do binário confirma existirem.
       ansible.builtin.command:
         argv: >-
           {{ ['ovirt-img', 'upload-disk',
@@ -87,11 +99,10 @@
               '--username', ovirt_username,
               '--password-file', upload_password_file]
              + upload_tls_args
-             + ['--storage-domain', upload_storage_domain,
-                '--format', upload_disk_format,
+             + ['-s', upload_storage_domain,
+                '-f', upload_disk_format,
                 '--disk-id', item.item.id,
-                '--name', item.item.alias,
-                '--description', 'Migrado do ESXi ' ~ esxi_host ~ ' (' ~ item.item.disk ~ '.vmdk)']
+                '--name', item.item.alias]
              + (['--preallocated'] if (upload_preallocated | bool) else [])
              + [item.item.path] }}
       loop: "{{ upload_existing.results }}"
