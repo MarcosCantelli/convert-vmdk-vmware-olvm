@@ -37,8 +37,18 @@
   tasks:
 
     - name: "[precheck] Alvo: apenas a VM informada em -e vm_name=..."
+      # Procura a entrada em vars/vms.yml primeiro. Sem isso, o alvo sairia
+      # como um dicionário cru {name: X} — e aí `esxi_datastore` e
+      # `esxi_folder` cairiam nos padrões globais, apontando para o datastore
+      # errado numa VM que os sobrescreve. O sintoma era enganoso:
+      # "Arquivo .vmx encontrado: NAO — confira o nome da pasta".
+      #
+      # O fallback continua existindo para consultar uma VM que ainda não foi
+      # declarada em vars/vms.yml (aí vale passar -e esxi_datastore=...).
       ansible.builtin.set_fact:
-        precheck_targets: "{{ [{'name': vm_name}] }}"
+        precheck_targets: >-
+          {{ (vms | default([]) | selectattr('name', 'equalto', vm_name) | list)
+             | default([{'name': vm_name}], true) }}
       when: vm_name is defined
 
     - name: "[precheck] Alvo: todas as VMs de vars/vms.yml"
@@ -70,11 +80,16 @@
 
     - name: "[precheck] Localizar o .vmx de cada VM no datastore"
       # O diretório vai entre aspas simples (pastas de VM do VMware costumam ter
-      # espaço no nome) e o glob *.vmx fica FORA delas, para o shell expandir.
+      # espaço no nome) e o glob fica FORA delas, para o shell expandir.
+      #
+      # Procuramos .vmx E .vmtx: VM usa .vmx, TEMPLATE usa .vmtx. Sem o segundo
+      # glob, todo template aparecia no relatório como "arquivo não encontrado".
+      vars:
+        alvo: "/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}"
       ansible.builtin.shell:
         cmd: >-
           {{ esxi_ssh_cmd }}
-          "ls -1 '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
+          "ls -1 '{{ alvo }}'/*.vmx '{{ alvo }}'/*.vmtx 2>/dev/null || true"
       loop: "{{ precheck_targets }}"
       loop_control:
         label: "{{ item.name }}"
@@ -92,12 +107,14 @@
       # Vários `-e` em vez de um regex com alternação (a|b|c) de propósito: o
       # mesmo resultado, sem o caractere "|" no comando — que o ansible-lint
       # confundiria com um pipe de shell sem pipefail.
+      vars:
+        alvo: "/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}"
       ansible.builtin.shell:
         cmd: >-
           {{ esxi_ssh_cmd }}
           "grep -i -e '^firmware' -e '^guestOS' -e '^numvcpus'
           -e '^cpuid.coresPerSocket' -e '^memSize' -e '^displayName'
-          '/vmfs/volumes/{{ item.esxi_datastore | default(esxi_datastore) }}/{{ item.esxi_folder | default(item.name) }}'/*.vmx 2>/dev/null || true"
+          '{{ alvo }}'/*.vmx '{{ alvo }}'/*.vmtx 2>/dev/null || true"
       loop: "{{ precheck_targets }}"
       loop_control:
         label: "{{ item.name }}"

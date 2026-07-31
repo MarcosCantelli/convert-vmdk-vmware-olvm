@@ -1,0 +1,70 @@
+---
+##############################################################################
+# role: seal
+#
+# O que faz: "sela" a imagem com virt-sysprep, offline, antes de ela virar
+# template no oVirt.
+#
+# POR QUE ISSO É OBRIGATÓRIO PARA TEMPLATE (e não para VM):
+# um template é clonado muitas vezes. Se a imagem carregar a identidade da
+# máquina original, TODAS as VMs criadas a partir dele nascem idênticas:
+#
+#   machine-id igual  -> no Ubuntu, o systemd-networkd usa o machine-id como
+#                        client-id de DHCP. Resultado: todas as clones pedem e
+#                        disputam o MESMO IP. O sintoma (VMs trocando de IP
+#                        entre si, conexões caindo) não aponta para a causa.
+#   chave de host SSH igual -> todas se apresentam como a mesma máquina;
+#                        qualquer verificação de host key vira teatro.
+#   hostname igual    -> DNS e logs viram um emaranhado.
+#
+# O virt-sysprep resolve tudo isso com a VM desligada, no qcow2.
+#
+# WINDOWS NÃO É SELADO AQUI. A generalização do Windows é feita pelo
+# `sysprep.exe /generalize`, que precisa rodar DENTRO do Windows — nenhuma
+# ferramenta offline substitui isso. Um template Windows vindo do vCenter
+# normalmente já foi generalizado quando foi criado. Por isso as entradas
+# Windows em vars/vms.yml trazem `seal: false`, e a decisão fica explícita.
+#
+# Entrada:   `vm` (dict) com is_template: true
+# Onde roda: delegado ao host de virtualização (quem tem virt-sysprep)
+#
+# IDEMPOTÊNCIA: arquivo-sentinela `.<disco>.sealed`.
+##############################################################################
+
+- name: "[seal] Selar a imagem com virt-sysprep"
+  # LIBGUESTFS_BACKEND=direct pelo mesmo motivo do virt-customize: sem isso o
+  # libguestfs tenta usar libvirt e falha por permissão no host oVirt.
+  ansible.builtin.command:
+    argv: >-
+      {{ ['virt-sysprep', '-a', vm_workdir ~ '/' ~ item ~ '.qcow2']
+         + (['--operations', ('defaults,' ~ (seal_extra_operations | join(',')))]
+            if (seal_extra_operations | length) > 0 else []) }}
+    creates: "{{ vm_workdir }}/.{{ item }}.sealed"
+  environment:
+    LIBGUESTFS_BACKEND: direct
+  loop: "{{ seal_disks }}"
+  register: seal_result
+  delegate_to: "{{ olvm_host }}"
+  async: "{{ seal_timeout }}"
+  poll: 15
+
+- name: "[seal] Marcar o disco como já selado (sentinela)"
+  # noqa: no-handler
+  # Mesma razão da sentinela do fix_network: é por disco e precisa ser gravada
+  # logo após o selamento daquele disco, não ao fim do play.
+  ansible.builtin.file:
+    path: "{{ vm_workdir }}/.{{ item.item }}.sealed"
+    state: touch
+    mode: "0644"
+  loop: "{{ seal_result.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item is changed
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[seal] Resumo do selamento"
+  ansible.builtin.debug:
+    msg: >-
+      Imagem de '{{ vm.name }}' selada: machine-id, chaves de host SSH,
+      hostname, leases de DHCP e logs removidos. Cada VM criada a partir deste
+      template vai gerar identidade própria no primeiro boot.

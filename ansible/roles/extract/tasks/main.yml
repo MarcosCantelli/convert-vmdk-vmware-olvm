@@ -146,13 +146,14 @@
   #   * aqui é `scp`, que interpreta o caminho pelo próprio parser, sem shell.
   #     Aspas viram PARTE DO NOME e o erro sai como
   #     `scp: '/vmfs/...': No such file or directory` — arquivo que existe.
-  # Consequência aceita: pasta de VM com espaço no nome não funciona por esta
-  # via. Nenhuma das VMs deste ambiente tem, e o precheck avisaria antes.
+  # ESPAÇO NO NOME é suportado escapando com barra invertida no caminho
+  # remoto: o scp entrega esse caminho a um shell no ESXi, que desfaz o
+  # escape. O template "SQL V2" depende disso.
   ansible.builtin.command:
     argv: >-
       {{ esxi_scp_argv
-         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item ~ '.vmdk',
-            esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item ~ extract_data_suffix ~ '.vmdk',
+         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ (esxi_vm_path ~ '/' ~ item ~ '.vmdk') | replace(' ', '\\ '),
+            esxi_user ~ '@' ~ esxi_host ~ ':' ~ (esxi_vm_path ~ '/' ~ item ~ extract_data_suffix ~ '.vmdk') | replace(' ', '\\ '),
             vm_workdir ~ '/.incoming/'] }}
     creates: "{{ vm_workdir }}/{{ item }}{{ extract_data_suffix }}.vmdk"
   loop: "{{ extract_pending }}"
@@ -183,14 +184,22 @@
 # `-p` mostra progresso no log.
 # --------------------------------------------------------------------------
 - name: "[extract] Converter VMDK para qcow2 (compat=1.1)"
+  # argv, e não linha de comando: há template cujo disco tem ESPAÇO no nome
+  # ("SQL V2_5.vmdk"). Numa string, o shlex do módulo quebraria em dois
+  # argumentos e o qemu-img procuraria um arquivo inexistente.
   ansible.builtin.command:
-    cmd: >-
-      qemu-img convert -p
-      -f vmdk
-      -O qcow2
-      -o compat=1.1
-      {{ vm_workdir }}/{{ item }}.vmdk
-      {{ vm_workdir }}/{{ item }}.qcow2
+    argv:
+      - qemu-img
+      - convert
+      - "-p"
+      - "-f"
+      - vmdk
+      - "-O"
+      - qcow2
+      - "-o"
+      - compat=1.1
+      - "{{ vm_workdir }}/{{ item }}.vmdk"
+      - "{{ vm_workdir }}/{{ item }}.qcow2"
     creates: "{{ vm_workdir }}/{{ item }}.qcow2"
   loop: "{{ extract_pending }}"
   delegate_to: "{{ olvm_host }}"

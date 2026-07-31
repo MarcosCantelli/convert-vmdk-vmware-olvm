@@ -1,0 +1,20 @@
+---
+##############################################################################
+# roles/seal/defaults/main.yml
+##############################################################################
+
+# Só o disco de boot é selado — é onde vive a identidade do sistema.
+seal_disks: "{{ [vm.disks | first] }}"
+seal_boot_disk: "{{ vm.disks | first }}"
+
+# Operações extras do virt-sysprep, além do conjunto padrão.
+# O padrão já remove o essencial: machine-id, chaves de host SSH, hostname,
+# leases de DHCP, logs, histórico de shell, regras udev de rede e cache de
+# gerenciador de pacotes.
+seal_extra_operations: []
+
+# NÃO habilite `fs-uuids` sem pensar: trocar o UUID dos sistemas de arquivos
+# quebra /etc/fstab e a VM não boota.
+
+# Timeout do virt-sysprep (segundos).
+seal_timeout: 1800

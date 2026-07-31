@@ -1,0 +1,35 @@
+---
+##############################################################################
+# roles/create_template/defaults/main.yml
+##############################################################################
+
+# Firmware -> bios_type, igual à role create_vm.
+create_template_firmware: "{{ vm.firmware | default(default_firmware) }}"
+create_template_bios_type: "{{ ovirt_bios_type_map[create_template_firmware] }}"
+
+# Hardware do template (herdado por quem for clonado).
+create_template_cpu_sockets: "{{ vm.cpu_sockets | default(1) }}"
+create_template_cpu_cores: "{{ vm.cpu_cores | default(2) }}"
+create_template_cpu_threads: "{{ vm.cpu_threads | default(1) }}"
+create_template_memory_gib: "{{ vm.memory_gib | default(4) }}"
+
+create_template_type: "{{ vm.vm_type | default('server') }}"
+create_template_operating_system: "{{ vm.operating_system | default('') }}"
+
+# Interfaces: Windows sem virtio precisa de sata/e1000 (veja vars/vms.yml).
+create_template_disk_interface: "{{ vm.disk_interface | default(ovirt_disk_interface) }}"
+
+# VM temporária usada para construir o template.
+#
+# O oVirt NÃO cria template a partir de um disco solto: template nasce SEMPRE
+# de uma VM. Então criamos uma VM descartável, anexamos o disco migrado,
+# geramos o template a partir dela e a removemos em seguida. A criação do
+# template COPIA os discos, então apagar a VM depois não afeta o template.
+create_template_build_vm: "{{ vm.name }}-tmplbuild"
+
+# Tempo máximo de espera pelas operações do engine. A criação do template
+# copia o disco inteiro dentro do storage domain — em disco grande, demora.
+create_template_timeout: 3600
+
+# Remover a VM temporária ao final. Deixe false só para depurar.
+create_template_cleanup: true

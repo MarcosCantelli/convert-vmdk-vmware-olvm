@@ -1,0 +1,133 @@
+---
+##############################################################################
+# role: create_template
+#
+# O que faz: transforma o disco migrado num TEMPLATE do oVirt.
+#
+# O CAMINHO NÃO É DIRETO, e vale entender por quê: no oVirt não existe "criar
+# template a partir de um disco". Template nasce sempre DE UMA VM. Então:
+#
+#   1. criamos uma VM descartável ("<nome>-tmplbuild") com o disco anexado
+#   2. geramos o template a partir dela
+#   3. removemos a VM descartável
+#
+# A criação do template COPIA os discos da VM para discos próprios do
+# template, então remover a VM no passo 3 não afeta o template. Em compensação
+# o storage precisa comportar as duas cópias durante a operação, e o passo 2
+# demora proporcionalmente ao tamanho do disco.
+#
+# Entrada:
+#   vm             — dict da VM (vars/vms.yml) com is_template: true
+#   vm_disk_items  — discos enviados, com alias/UUID
+#   ovirt_auth     — sessão autenticada
+#
+# Onde roda: delegado ao host de virtualização (quem tem o SDK do oVirt).
+##############################################################################
+
+- name: "[create_template] Validar as entradas da role"
+  ansible.builtin.assert:
+    that:
+      - vm_disk_items is defined
+      - vm_disk_items | length > 0
+      - ovirt_auth is defined
+      - create_template_firmware in ovirt_bios_type_map
+    fail_msg: >-
+      Entradas inválidas para create_template. Verifique `vm_disk_items`,
+      `ovirt_auth` e o firmware ('{{ create_template_firmware }}').
+    quiet: true
+
+- name: "[create_template] Verificar se o template já existe"
+  # Idempotência: se o template já está no engine, não refazemos nada — a
+  # cópia do disco é cara demais para repetir por engano.
+  ovirt.ovirt.ovirt_template_info:
+    auth: "{{ ovirt_auth }}"
+    pattern: "name={{ vm.name }}"
+  register: create_template_existing
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[create_template] Construir o template"
+  when: (create_template_existing.ovirt_templates | length) == 0
+  block:
+
+    - name: "[create_template] Criar a VM temporária de construção"
+      ovirt.ovirt.ovirt_vm:
+        auth: "{{ ovirt_auth }}"
+        name: "{{ create_template_build_vm }}"
+        cluster: "{{ ovirt_cluster }}"
+        state: present
+        type: "{{ create_template_type }}"
+        bios_type: "{{ create_template_bios_type }}"
+        memory: "{{ create_template_memory_gib }}GiB"
+        cpu_sockets: "{{ create_template_cpu_sockets }}"
+        cpu_cores: "{{ create_template_cpu_cores }}"
+        cpu_threads: "{{ create_template_cpu_threads }}"
+        operating_system: "{{ create_template_operating_system | default(omit, true) }}"
+        comment: "VM temporária — construção do template {{ vm.name }}"
+        timeout: "{{ create_template_timeout }}"
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[create_template] Anexar os discos migrados à VM temporária"
+      ovirt.ovirt.ovirt_disk:
+        auth: "{{ ovirt_auth }}"
+        id: "{{ item.id }}"
+        vm_name: "{{ create_template_build_vm }}"
+        description: "Template migrado do ESXi {{ esxi_host }} ({{ item.disk }}.vmdk)"
+        state: attached
+        interface: "{{ create_template_disk_interface }}"
+        bootable: "{{ item.bootable }}"
+        activate: true
+        timeout: "{{ create_template_timeout }}"
+      loop: "{{ vm_disk_items }}"
+      loop_control:
+        label: "{{ item.alias }} (bootable={{ item.bootable }})"
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[create_template] Gerar o template a partir da VM temporária"
+      # `seal` fica em false de propósito: a selagem já foi feita OFFLINE pela
+      # role `seal`, com virt-sysprep, antes do upload. O seal do módulo roda
+      # do lado do engine e só funciona em Linux.
+      ovirt.ovirt.ovirt_template:
+        auth: "{{ ovirt_auth }}"
+        name: "{{ vm.name }}"
+        vm: "{{ create_template_build_vm }}"
+        cluster: "{{ ovirt_cluster }}"
+        description: >-
+          Template migrado do ESXi {{ esxi_host }}
+          (firmware={{ create_template_firmware }})
+        state: present
+        seal: false
+        timeout: "{{ create_template_timeout }}"
+      delegate_to: "{{ olvm_host }}"
+
+  always:
+    - name: "[create_template] Remover a VM temporária de construção"
+      # No bloco `always`: mesmo se a criação do template falhar, não deixamos
+      # uma VM órfã ocupando espaço e confundindo a lista do OLVM.
+      # O template já tem cópia própria dos discos — apagar a VM não o afeta.
+      ovirt.ovirt.ovirt_vm:
+        auth: "{{ ovirt_auth }}"
+        name: "{{ create_template_build_vm }}"
+        state: absent
+        timeout: "{{ create_template_timeout }}"
+      when: create_template_cleanup | bool
+      delegate_to: "{{ olvm_host }}"
+
+- name: "[create_template] Ler o estado final do template"
+  ovirt.ovirt.ovirt_template_info:
+    auth: "{{ ovirt_auth }}"
+    pattern: "name={{ vm.name }}"
+  register: create_template_info
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[create_template] Resumo do template criado"
+  ansible.builtin.debug:
+    msg:
+      - "TEMPLATE: {{ vm.name }}  (id={{ create_template_info.ovirt_templates[0].id }})"
+      - "Firmware: {{ create_template_firmware }} -> bios_type={{ create_template_bios_type }}"
+      - "CPU: {{ create_template_cpu_sockets }}x{{ create_template_cpu_cores }}x{{ create_template_cpu_threads }}"
+      - "Memória: {{ create_template_memory_gib }} GiB"
+      - "Selado offline: {{ 'sim (virt-sysprep)' if (vm.seal | default(true) | bool) else 'NAO — Windows, generalize com sysprep.exe dentro do sistema' }}"
+      - "Próximo passo: criar VM a partir dele, pelo OLVM ou pelo Terraform (template_id)."
+  when: (create_template_info.ovirt_templates | length) > 0

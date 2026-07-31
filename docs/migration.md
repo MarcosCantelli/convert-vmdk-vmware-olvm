@@ -394,6 +394,41 @@ você valida antes de ligar. Para ligar automaticamente, mude para `running` em
    (ou deixe `extract_remove_vmdk_after_convert: true` para apagar os `.vmdk`
    logo após a conversão — recomendo manter `false` até validar.)
 
+### Templates do vCenter viram templates do OLVM
+
+Um template do VMware não aparece no `vim-cmd vmsvc/getallvms` e usa `.vmtx`
+em vez de `.vmx` — mas o **disco é idêntico** ao de uma VM. Por isso a
+migração reaproveita todo o caminho e só troca o final: com
+`is_template: true` em `vars/vms.yml`, a role `create_template` entra no lugar
+da `create_vm`.
+
+O oVirt não cria template a partir de um disco solto: template nasce sempre de
+uma VM. A role resolve isso criando uma VM descartável (`<nome>-tmplbuild`),
+gerando o template a partir dela e removendo-a em seguida — a criação do
+template copia os discos, então apagar a VM não o afeta. Nenhuma VM sobra na
+lista do OLVM.
+
+**A selagem é o que separa um template bom de um problema futuro.** Um
+template é clonado muitas vezes; se a imagem carregar a identidade da máquina
+original, todas as clones nascem iguais:
+
+| O que fica igual | Consequência |
+|---|---|
+| `machine-id` | no Ubuntu é o client-id do DHCP: **todas as clones disputam o mesmo IP** |
+| chave de host SSH | todas se apresentam como a mesma máquina |
+| hostname | DNS e logs viram um emaranhado |
+
+A role `seal` roda `virt-sysprep` offline, no qcow2, antes do upload —
+resolvendo os três de uma vez.
+
+**Windows não é selado aqui** (`seal: false`). A generalização do Windows é o
+`sysprep.exe /generalize`, que só roda dentro do sistema; nenhuma ferramenta
+offline substitui. Um template Windows vindo do vCenter normalmente já foi
+generalizado quando foi criado.
+
+Todo template recebe `network: {}`, forçando DHCP: template com IP fixo
+geraria clones brigando pelo mesmo endereço.
+
 ### O IP fixo é preservado automaticamente
 
 A role `fix_network` **lê o netplan que já existe dentro do qcow2** (com

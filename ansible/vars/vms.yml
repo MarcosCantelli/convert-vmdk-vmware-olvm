@@ -16,6 +16,8 @@
 #   disk_interface    override; virtio_scsi (Linux) | sata (Windows sem virtio)
 #   nic_interface     override; virtio (Linux) | e1000 (Windows sem virtio)
 #   fix_network       true = virt-customize offline (só faz sentido em Linux)
+#   is_template       true = vira TEMPLATE no OLVM, não VM
+#   seal              true = virt-sysprep offline antes de virar template
 #   network           opcional; veja "IP FIXO" abaixo
 #   storage_domain    opcional, sobrescreve ovirt_storage_domain
 #
@@ -236,6 +238,211 @@ vms:
   #   disk_interface: sata
   #   nic_interface: e1000
   #   fix_network: false
+
+  # =========================================================================
+  # TEMPLATES DO VCENTER  ->  TEMPLATES DO OLVM
+  #
+  # `is_template: true` muda o final do fluxo: em vez de create_vm, roda
+  # create_template, que cria uma VM descartável só para gerar o template no
+  # oVirt e a remove em seguida. Nenhuma VM sobra na lista.
+  #
+  # SELAGEM (`seal`), o ponto que mais importa num template:
+  #   Linux   -> seal: true. O virt-sysprep roda offline e remove machine-id,
+  #              chaves de host SSH, hostname, leases de DHCP e logs. Sem isso,
+  #              toda VM clonada nasce com a MESMA identidade — e no Ubuntu o
+  #              machine-id é o client-id do DHCP, então as clones disputam o
+  #              mesmo IP. O sintoma não aponta para a causa.
+  #   Windows -> seal: false. A generalização do Windows é o sysprep.exe
+  #              /generalize, que só roda DENTRO do sistema; nenhuma ferramenta
+  #              offline substitui. Um template Windows do vCenter normalmente
+  #              já veio generalizado.
+  #
+  # Todos com `network: {}` para forçar DHCP: template com IP fixo geraria
+  # clones brigando pelo mesmo endereço.
+  #
+  # NOME DO DISCO nem sempre é o da pasta — repare em SQL_SERVER_TEMPLATE
+  # (disco _4), Win11_Template (disco _2) e SQL V2 (disco "SQL V2_5", com
+  # espaço). Todos verificados lendo o datastore.
+  # =========================================================================
+
+  # Ubuntu 24.04.4 · 20 GB · BIOS
+  - name: Ubuntu-Terraform
+    is_template: true
+    seal: true
+    esxi_datastore: VS2_HD2_1TB
+    esxi_folder: Ubuntu-Terraform
+    disks:
+      - Ubuntu-Terraform
+    firmware: bios
+    operating_system: other_linux
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 2
+    network: {}
+    fix_network: true
+
+  # Ubuntu 24.04.1 · 40 GB · BIOS
+  - name: GameServerTemplate
+    is_template: true
+    seal: true
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: GameServerTemplate
+    disks:
+      - GameServerTemplate
+    firmware: bios
+    operating_system: other_linux
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    network: {}
+    fix_network: true
+
+  # Ubuntu 24.04.1 · 40 GB · BIOS
+  - name: Zomboid_Template
+    is_template: true
+    seal: true
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: Zomboid_Template
+    disks:
+      - Zomboid_Template
+    firmware: bios
+    operating_system: other_linux
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    network: {}
+    fix_network: true
+
+  # Windows Server 2022 · 40 GB · UEFI
+  - name: AD_WS22_Template
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: AD_WS22_Template
+    disks:
+      - AD_WS22_Template
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 4
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # Windows Server · 40 GB · UEFI · disco com sufixo _4
+  - name: SQL_SERVER_TEMPLATE
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: SQL_SERVER_TEMPLATE
+    disks:
+      - SQL_SERVER_TEMPLATE_4
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # Windows Server · 40 GB · UEFI
+  # PASTA E DISCO COM ESPAÇO NO NOME ("SQL V2" / "SQL V2_5"). O nome no OLVM
+  # é SQL-V2, sem espaço; esxi_folder e disks preservam o nome de origem.
+  - name: SQL-V2
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: SQL V2
+    disks:
+      - SQL V2_5
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 8
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # Windows 11 25H2 · 40 GB · UEFI
+  - name: W11_Template_25H2
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: W11_Template_25H2
+    disks:
+      - W11_Template_25H2
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 8
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # Windows Server 2008 R2 · 40 GB · BIOS (sem linha firmware no .vmtx)
+  - name: WinServer2008R2
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: WinServer2008R2
+    disks:
+      - WinServer2008R2
+    firmware: bios
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # Windows 11 · 32 GB · UEFI · disco com sufixo _2
+  - name: Win11_Template
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD500
+    esxi_folder: Win11_Template
+    disks:
+      - Win11_Template_2
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # Windows Server 2022 · 40 GB · UEFI
+  - name: WinServer22
+    is_template: true
+    seal: false
+    esxi_datastore: VS2_HD500
+    esxi_folder: WinServer22
+    disks:
+      - WinServer22
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 4
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
 
   # =========================================================================
   # O QUE EXISTE NO ESXi E NÃO ENTRA NESTA LISTA (e por quê)

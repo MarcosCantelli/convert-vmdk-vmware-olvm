@@ -191,6 +191,15 @@
         - fix_network_enabled | bool
         - vm.fix_network | default(true) | bool
 
+    - name: "[migrate_one] Etapa 2.5 — selar a imagem (só para template)"
+      # Antes do upload, de propósito: o selamento acontece no qcow2 local,
+      # não no disco já publicado no storage domain.
+      ansible.builtin.include_role:
+        name: seal
+      when:
+        - vm.is_template | default(false) | bool
+        - vm.seal | default(true) | bool
+
     - name: "[migrate_one] Etapa 3/4 — enviar os discos ao storage domain"
       ansible.builtin.include_role:
         name: upload
@@ -198,6 +207,14 @@
     - name: "[migrate_one] Etapa 4/4 — criar a VM, anexar discos e NIC"
       ansible.builtin.include_role:
         name: create_vm
+      when: not (vm.is_template | default(false) | bool)
+
+    - name: "[migrate_one] Etapa 4/4 — criar o TEMPLATE no oVirt"
+      # Template não vira VM: a role cria uma VM descartável só para gerar o
+      # template e a remove em seguida.
+      ansible.builtin.include_role:
+        name: create_template
+      when: vm.is_template | default(false) | bool
 
   always:
     - name: "[migrate_one] Encerrar a sessão no engine"
