@@ -220,7 +220,14 @@
 
 - name: "[extract] Conferir o resultado da conversão"
   ansible.builtin.command:
-    cmd: "qemu-img info --output=json {{ vm_workdir }}/{{ item }}.qcow2"
+    # argv pelo mesmo motivo da conversão: disco com espaço no nome
+    # ("SQL V2_5.qcow2") viraria dois argumentos numa string, e o erro sai
+    # como `qemu-img: Expecting one image file name`.
+    argv:
+      - qemu-img
+      - info
+      - "--output=json"
+      - "{{ vm_workdir }}/{{ item }}.qcow2"
   loop: "{{ vm.disks }}"
   register: extract_qcow2_info
   changed_when: false
