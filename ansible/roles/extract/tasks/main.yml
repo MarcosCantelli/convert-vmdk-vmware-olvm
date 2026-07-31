@@ -146,14 +146,19 @@
   #   * aqui é `scp`, que interpreta o caminho pelo próprio parser, sem shell.
   #     Aspas viram PARTE DO NOME e o erro sai como
   #     `scp: '/vmfs/...': No such file or directory` — arquivo que existe.
-  # ESPAÇO NO NOME é suportado escapando com barra invertida no caminho
-  # remoto: o scp entrega esse caminho a um shell no ESXi, que desfaz o
-  # escape. O template "SQL V2" depende disso.
+  # ESPAÇO NO NOME funciona SEM escape nenhum, e tentar escapar QUEBRA.
+  # Testado contra o ESXi: passando o caminho como um único elemento de argv,
+  # o scp o entrega corretamente ao outro lado. Já `| replace(' ', '\\ ')`
+  # produzia DUAS barras — porque um bloco `>-` com {{ lista }} é renderizado
+  # para o repr da lista (onde \ vira \\) e reinterpretado depois. O erro
+  # saía como:
+  #   scp: /vmfs/.../SQL\\ V2/SQL\\ V2_5.vmdk: No such file or directory
+  # Regra geral: nunca escape shell dentro de argv — não há shell para desfazer.
   ansible.builtin.command:
     argv: >-
       {{ esxi_scp_argv
-         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ (esxi_vm_path ~ '/' ~ item ~ '.vmdk') | replace(' ', '\\ '),
-            esxi_user ~ '@' ~ esxi_host ~ ':' ~ (esxi_vm_path ~ '/' ~ item ~ extract_data_suffix ~ '.vmdk') | replace(' ', '\\ '),
+         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item ~ '.vmdk',
+            esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item ~ extract_data_suffix ~ '.vmdk',
             vm_workdir ~ '/.incoming/'] }}
     creates: "{{ vm_workdir }}/{{ item }}{{ extract_data_suffix }}.vmdk"
   loop: "{{ extract_pending }}"
