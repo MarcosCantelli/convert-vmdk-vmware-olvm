@@ -59,6 +59,44 @@
   loop_control:
     label: "{{ item.item }}"
 
+# --------------------------------------------------------------------------
+# GUARDA CONTRA SNAPSHOT ATIVO
+#
+# VM com snapshot no VMware não tem UM disco: tem uma CADEIA. O `-flat.vmdk`
+# vira apenas a base, congelada no momento em que o primeiro snapshot foi
+# criado, e todas as mudanças posteriores vivem nos deltas
+# `nome-000001-sesparse.vmdk`, `nome-000002-...` e assim por diante.
+#
+# Copiar só a base "funciona": a migração termina sem erro e entrega uma VM
+# que boota — com o conteúdo de meses atrás. É a pior categoria de falha,
+# porque não avisa. Por isso abortamos aqui.
+#
+# Como resolver na origem, antes de migrar: consolide os snapshots no vCenter
+# (Snapshots > Delete All / Consolidate). Depois disso sobra um único
+# `-flat.vmdk` já com tudo aplicado, e a migração roda normalmente.
+# --------------------------------------------------------------------------
+- name: "[extract] Procurar discos de snapshot na origem"
+  ansible.builtin.shell:
+    cmd: >-
+      {{ esxi_ssh_cmd }}
+      "ls -1 '{{ esxi_vm_path }}'/*-[0-9][0-9][0-9][0-9][0-9][0-9].vmdk 2>/dev/null || true"
+  register: extract_snapshots
+  changed_when: false
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[extract] Abortar se a VM tem snapshot ativo"
+  ansible.builtin.assert:
+    that: (extract_snapshots.stdout | trim | length) == 0
+    fail_msg: >-
+      ABORTADO: '{{ vm.name }}' tem snapshot ativo no VMware.
+      Discos de delta encontrados:
+      {{ extract_snapshots.stdout_lines | map('basename') | join(', ') }}.
+      O disco base está congelado no momento do primeiro snapshot, e tudo que
+      mudou depois está nesses deltas — migrar só a base entregaria uma VM com
+      dados antigos, sem nenhum erro aparente.
+      Consolide os snapshots no vCenter (Snapshots > Delete All) e rode de novo.
+    quiet: true
+
 - name: "[extract] Montar a lista de discos pendentes"
   # Uma lista simples de NOMES. As tasks seguintes iteram sobre ela, e não
   # sobre resultados de outras tasks: iterar sobre resultados aninha `item`

@@ -65,12 +65,23 @@ fix_network_static_override: "{{ vm.network | default({}) }}"
 # encontrar variável ausente; as tasks sobrescrevem com set_fact.
 fix_network_static: {}
 
-# Arquivos que atrapalham a rede depois da migração e são removidos:
+# Arquivos que atrapalham a rede depois da migração:
 #   70-persistent-net.rules -> amarra o nome da interface ao MAC ANTIGO
 #   50-cloud-init.yaml      -> netplan gerado pelo cloud-init com o nome antigo
-fix_network_remove_files:
+#
+# Eles são RENOMEADOS para .migracao-bak, não apagados. A diferença importa:
+# tanto o netplan quanto o udev só leem arquivos com a extensão certa, então
+# renomear já os desativa — e preserva o conteúdo.
+#
+# Apagar custou caro aqui: em VMs instaladas pelo subiquity, a configuração de
+# rede vive justamente no 50-cloud-init.yaml. Removê-lo destruía a única cópia
+# do endereço original, e depois não havia como saber qual IP a VM usava.
+fix_network_disable_files:
   - /etc/udev/rules.d/70-persistent-net.rules
   - /etc/netplan/50-cloud-init.yaml
+
+# Sufixo dos arquivos desativados, caso precise consultá-los dentro da VM.
+fix_network_backup_suffix: ".migracao-bak"
 
 # Timeout do virt-customize (segundos). Ele sobe um appliance libguestfs,
 # o que pode ser lento na primeira execução.

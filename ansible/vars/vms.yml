@@ -49,9 +49,11 @@
 # * datastore e pasta -> `vim-cmd vmsvc/getallvms` no ESXi
 # * firmware, CPU, memória, SO e nomes de disco -> `ansible-playbook precheck.yml`
 #
-# FIRMWARE: as 6 são BIOS. Nenhum .vmx tem a linha `firmware`, e o VMware só a
-# escreve quando é EFI. Ao acrescentar uma VM nova aqui, rode o precheck antes:
-# firmware errado faz a VM ligar sem achar o disco de boot.
+# FIRMWARE: as 6 Linux são BIOS (nenhum .vmx tem a linha `firmware` — o VMware
+# só a escreve quando é EFI); as 3 Windows são UEFI (firmware = "efi").
+# Ao acrescentar uma VM nova aqui, rode o precheck antes: firmware errado faz a
+# VM ligar sem achar o disco de boot. O precheck também avisa sobre SNAPSHOT
+# ativo, que é a outra armadilha silenciosa.
 #
 # Repare no caso MySQL_HO: a VM se chama MySQL_HO (underscore) mas mora na
 # pasta MySQL-HO (hífen). VM renomeada no vCenter mantém o nome ANTIGO nos
@@ -163,8 +165,9 @@ vms:
   #     Linux — em imagem Windows não serve para nada. A rede do Windows se
   #     ajusta depois do boot, pelo console.
   #
-  # (c) FIRMWARE. Windows Server 2019+ instalado em 2022/2025 costuma ser
-  #     UEFI, mas isso muda tudo no boot: confirme com precheck.yml antes.
+  # (c) FIRMWARE UEFI, confirmado no precheck: as três têm firmware = "efi"
+  #     no .vmx, então bios_type q35_ovmf. Firmware errado faz a VM ligar sem
+  #     achar o disco de boot.
   #
   # (d) VLAN_AD. Win_Server_SQL_LAB e WinServer22_AD têm uma SEGUNDA placa na
   #     VLAN_AD, que ainda não existe no OLVM. A role create_vm cria apenas
@@ -178,8 +181,8 @@ vms:
   #   esxi_folder: Win_Server_25
   #   disks:
   #     - Win_Server_25
-  #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
-  #   operating_system: other     # ver nota sobre IDs de SO no fim do arquivo
+  #   firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
+  #   operating_system: other     # guestOS = windows9srv-64; ver nota no fim
   #   cpu_sockets: 1
   #   cpu_cores: 4
   #   cpu_threads: 1
@@ -191,11 +194,19 @@ vms:
   # - name: Win_Server_SQL_LAB
   #   esxi_datastore: VS2_HD1_1TB
   #   esxi_folder: Win_Server_SQL_LAB
-  #   # BLOQUEADA: tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
+  #   # BLOQUEADA POR DOIS MOTIVOS:
+  #   # 1) SNAPSHOTS ATIVOS. A VM tem uma cadeia de dois:
+  #   #      base 40 GB -> -000001 (8,8 GB, "SQL SERVER STL", set/2025)
+  #   #                 -> -000002 (7,3 GB, "SQL STL v2",     dez/2025)
+  #   #    O -flat.vmdk é só a base, congelada em setembro. Migrar assim
+  #   #    entregaria dados de meses atrás sem nenhum erro aparente — por isso
+  #   #    a role extract ABORTA se encontrar discos de delta.
+  #   #    Consolide no vCenter (Snapshots > Delete All) antes de migrar.
+  #   # 2) tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
   #   disks:
   #     - Win_Server_SQL_LAB
-  #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
-  #   operating_system: other
+  #   firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
+  #   operating_system: other     # guestOS = windows9srv-64
   #   cpu_sockets: 1
   #   cpu_cores: 2
   #   cpu_threads: 1
@@ -212,8 +223,8 @@ vms:
   #   # limpo (não snapshot/clone a quente) para não corromper o AD.
   #   disks:
   #     - WinServer22_AD
-  #   firmware: uefi              # SUPOSIÇÃO — confirmar com precheck.yml
-  #   operating_system: other
+  #   firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
+  #   operating_system: other     # guestOS = windows9srv-64
   #   cpu_sockets: 1
   #   cpu_cores: 4
   #   cpu_threads: 1

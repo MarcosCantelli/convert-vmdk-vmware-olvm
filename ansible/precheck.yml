@@ -133,6 +133,13 @@
           - "Arquivos de disco:"
           - "{{ item.2.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list }}"
           - >-
+            {{ 'SNAPSHOT ATIVO — NAO MIGRE ASSIM: existem discos de delta
+            (-000001, -000002...). O -flat.vmdk é apenas a base, congelada no
+            primeiro snapshot; migrar só ela entrega dados antigos sem avisar.
+            Consolide no vCenter (Snapshots > Delete All) antes de migrar.'
+               if (item.2.stdout | default('') is search('-[0-9]{6}\.vmdk'))
+               else 'Sem snapshot: um disco por VM, pronto para migrar.' }}
+          - >-
             LEMBRETE: cada disco são DOIS arquivos (nome.vmdk + nome-flat.vmdk).
             Em vars/vms.yml liste apenas o nome base, sem extensão e sem sufixo.
       loop: "{{ precheck_vmx.results | zip(precheck_vmx_info.results, precheck_vmdk.results) | list }}"

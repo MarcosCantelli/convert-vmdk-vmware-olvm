@@ -133,9 +133,12 @@
   #
   # --upload origem:destino — copia o netplan para dentro da imagem.
   #
-  # Removemos os arquivos com `--run-command rm -f` em vez de `--delete`
-  #   de propósito: `rm -f` não reclama quando o arquivo não existe, então a
-  #   mesma receita serve para VMs com e sem cloud-init.
+  # DESATIVAMOS renomeando, em vez de apagar. Netplan e udev só leem arquivos
+  #   com a extensão certa, então o `.migracao-bak` já basta para tirá-los de
+  #   circulação — e o conteúdo continua disponível dentro da VM.
+  #   Numa VM instalada pelo subiquity, a rede vive no 50-cloud-init.yaml:
+  #   apagá-lo destruía a única cópia do endereço original.
+  #   O `; true` no fim garante saída zero mesmo quando nenhum arquivo existe.
   #
   # `netplan generate || true` valida a sintaxe já dentro da imagem; o
   #   `|| true` evita quebrar a migração em distros sem netplan (RHEL/Oracle
@@ -155,7 +158,9 @@
       - "--run-command"
       - "chmod 0600 /etc/netplan/{{ fix_network_netplan_file }} || true"
       - "--run-command"
-      - "rm -f {{ fix_network_remove_files | join(' ') }}"
+      - >-
+        for f in {{ fix_network_disable_files | join(' ') }}; do
+        [ -e "$f" ] && mv "$f" "$f{{ fix_network_backup_suffix }}"; done; true
       - "--run-command"
       - "netplan generate || true"
   environment:
