@@ -197,10 +197,34 @@ vms:
     nic_interface: e1000        # até instalar o virtio-win
     fix_network: false          # netplan não existe no Windows
 
-  # - name: Win_Server_SQL_LAB
-  #   esxi_datastore: VS2_HD1_1TB
-  #   esxi_folder: Win_Server_SQL_LAB
-  #   # BLOQUEADA POR DOIS MOTIVOS:
+  # Windows Server · UEFI · CADEIA DE SNAPSHOTS
+  #
+  # `allow_snapshots: true` + disks apontando para o descritor do TOPO
+  # (-000002). O qemu-img lê seSparse e segue o parentFileNameHint sozinho,
+  # então a conversão achata a cadeia inteira:
+  #     base 40 GB  ->  -000001 (set/2025)  ->  -000002 (dez/2025)
+  # Resultado: imagem com TODAS as alterações, sem consolidar no vCenter.
+  #
+  # A 2ª placa (VLAN_AD) não é criada: a role cria só a de ovirtmgmt. Adicione
+  # pelo OLVM depois que a VLAN existir — o dado da VM já estará migrado.
+  - name: Win_Server_SQL_LAB
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: Win_Server_SQL_LAB
+    allow_snapshots: true
+    disks:
+      - Win_Server_SQL_LAB-000002
+    firmware: uefi
+    operating_system: other
+    cpu_sockets: 1
+    cpu_cores: 2
+    cpu_threads: 1
+    memory_gib: 8
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
+
+  # (histórico do bloqueio, mantido para referência)
+  #   Motivos que impediam antes:
   #   # 1) SNAPSHOTS ATIVOS. A VM tem uma cadeia de dois:
   #   #      base 40 GB -> -000001 (8,8 GB, "SQL SERVER STL", set/2025)
   #   #                 -> -000002 (7,3 GB, "SQL STL v2",     dez/2025)
@@ -221,23 +245,30 @@ vms:
   #   nic_interface: e1000
   #   fix_network: false
 
-  # - name: WinServer22_AD
-  #   esxi_datastore: VS2_HD1_1TB
-  #   esxi_folder: WinServer22_AD
-  #   # BLOQUEADA: tem 2ª placa na VLAN_AD, que ainda não existe no OLVM.
-  #   # Cuidado extra: é controlador de domínio. Migrar DC exige desligamento
-  #   # limpo (não snapshot/clone a quente) para não corromper o AD.
-  #   disks:
-  #     - WinServer22_AD
-  #   firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
-  #   operating_system: other     # guestOS = windows9srv-64
-  #   cpu_sockets: 1
-  #   cpu_cores: 4
-  #   cpu_threads: 1
-  #   memory_gib: 4
-  #   disk_interface: sata
-  #   nic_interface: e1000
-  #   fix_network: false
+  # Windows Server 2022 · UEFI · CONTROLADOR DE DOMÍNIO
+  #
+  # A 2ª placa (VLAN_AD) NÃO é criada aqui: a role cria só a de ovirtmgmt.
+  # Isso não impede a migração — o disco e os dados vêm inteiros. Depois de
+  # criar a VLAN_AD no OLVM, adicione a placa pela interface: é mais rápido
+  # que manter a VM no vCenter esperando.
+  #
+  # Como é DC, confirme que ela está DESLIGADA no vCenter antes de migrar.
+  # Cópia de disco com o AD em execução gera imagem crash-consistent e pode
+  # corromper o banco do diretório.
+  - name: WinServer22_AD
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: WinServer22_AD
+    disks:
+      - WinServer22_AD
+    firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
+    operating_system: other     # guestOS = windows9srv-64
+    cpu_sockets: 1
+    cpu_cores: 4
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata
+    nic_interface: e1000
+    fix_network: false
 
   # =========================================================================
   # TEMPLATES DO VCENTER  ->  TEMPLATES DO OLVM

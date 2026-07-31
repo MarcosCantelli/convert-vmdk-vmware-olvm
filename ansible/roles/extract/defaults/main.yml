@@ -19,3 +19,21 @@ extract_async_timeout: 21600
 
 # Intervalo de polling durante as operações longas.
 extract_async_poll: 30
+
+# ---------------------------------------------------------------------------
+# CADEIA DE SNAPSHOTS (opt-in, por VM: `allow_snapshots: true`)
+#
+# Por padrão a role ABORTA quando encontra discos de delta, porque copiar só a
+# base entrega dados antigos sem avisar. Mas o qemu-img (>= 4.1) LÊ o formato
+# seSparse do VMware e segue o `parentFileNameHint` sozinho — então dá para
+# converter a partir do descritor do TOPO e sair com uma imagem achatada
+# contendo tudo, sem consolidar no vCenter.
+#
+# Para usar, na VM em vars/vms.yml:
+#   allow_snapshots: true
+#   disks: ["Nome-000002"]     <- o descritor do TOPO, não a base
+#
+# Nesse modo a role copia TODOS os *.vmdk da pasta (base + deltas) em vez do
+# par descritor/dados, porque a conversão precisa da cadeia inteira.
+# ---------------------------------------------------------------------------
+extract_allow_snapshots: "{{ vm.allow_snapshots | default(false) }}"

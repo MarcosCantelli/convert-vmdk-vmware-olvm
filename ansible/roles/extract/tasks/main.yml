@@ -94,8 +94,11 @@
       O disco base está congelado no momento do primeiro snapshot, e tudo que
       mudou depois está nesses deltas — migrar só a base entregaria uma VM com
       dados antigos, sem nenhum erro aparente.
-      Consolide os snapshots no vCenter (Snapshots > Delete All) e rode de novo.
+      Duas saídas: consolidar no vCenter (Snapshots > Delete All), ou declarar
+      `allow_snapshots: true` na VM e apontar `disks` para o descritor do TOPO
+      — o qemu-img segue a cadeia e converte tudo.
     quiet: true
+  when: not (extract_allow_snapshots | bool)
 
 - name: "[extract] Montar a lista de discos pendentes"
   # Uma lista simples de NOMES. As tasks seguintes iteram sobre ela, e não
@@ -132,6 +135,31 @@
   when: extract_pending | length > 0
   delegate_to: "{{ olvm_host }}"
 
+- name: "[extract] Copiar a CADEIA de snapshots inteira (allow_snapshots)"
+  # Glob remoto: o `*` chega ao scp, que o entrega ao shell do ESXi. Traz base,
+  # descritores e todos os deltas — a conversão a partir do topo precisa de
+  # todos eles lado a lado.
+  ansible.builtin.command:
+    argv: >-
+      {{ esxi_scp_argv
+         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/*.vmdk',
+            vm_workdir ~ '/.incoming/'] }}
+    creates: "{{ vm_workdir }}/{{ item }}.vmdk"
+  loop: "{{ extract_pending }}"
+  when: extract_allow_snapshots | bool
+  delegate_to: "{{ olvm_host }}"
+  async: "{{ extract_async_timeout }}"
+  poll: "{{ extract_async_poll }}"
+  no_log: "{{ esxi_use_ssh_password | bool }}"
+
+- name: "[extract] Publicar a cadeia copiada (mv atômico)"
+  ansible.builtin.shell:
+    cmd: "mv {{ vm_workdir }}/.incoming/*.vmdk {{ vm_workdir }}/"
+    creates: "{{ vm_workdir }}/{{ item }}.vmdk"
+  loop: "{{ extract_pending }}"
+  when: extract_allow_snapshots | bool
+  delegate_to: "{{ olvm_host }}"
+
 - name: "[extract] Copiar par descritor+dados do ESXi (para a área temporária)"
   # argv (lista) em vez de linha de comando: cada elemento é um argumento
   # separado, então não precisamos de shell no host de origem.
@@ -162,6 +190,7 @@
             vm_workdir ~ '/.incoming/'] }}
     creates: "{{ vm_workdir }}/{{ item }}{{ extract_data_suffix }}.vmdk"
   loop: "{{ extract_pending }}"
+  when: not (extract_allow_snapshots | bool)
   delegate_to: "{{ olvm_host }}"
   async: "{{ extract_async_timeout }}"
   poll: "{{ extract_async_poll }}"
@@ -181,6 +210,7 @@
       - "{{ vm_workdir }}/"
     creates: "{{ vm_workdir }}/{{ item }}{{ extract_data_suffix }}.vmdk"
   loop: "{{ extract_pending }}"
+  when: not (extract_allow_snapshots | bool)
   delegate_to: "{{ olvm_host }}"
 
 # --------------------------------------------------------------------------
