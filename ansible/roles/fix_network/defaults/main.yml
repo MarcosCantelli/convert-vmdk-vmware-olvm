@@ -51,7 +51,19 @@ fix_network_guest_netplan_dir: /etc/netplan
 #       addresses: ["192.168.31.9"]
 #
 # Para forçar DHCP numa VM específica, use `network: {}` (dicionário vazio).
-fix_network_static_override: "{{ vm.network | default(None) }}"
+#
+# ATENÇÃO — armadilha que já custou caro aqui: NÃO use
+#   fix_network_static_override: "{{ vm.network | default(None) }}"
+# e depois teste com `is none`. Todo bloco {{ }} vira TEXTO, e `default(None)`
+# resulta em string VAZIA, não em None. O teste `is none` dá False, a detecção
+# é pulada em silêncio e toda VM sai em DHCP mesmo tendo IP fixo.
+# Por isso a existência do override é sinalizada por um booleano explícito.
+fix_network_has_override: "{{ vm.network is defined }}"
+fix_network_static_override: "{{ vm.network | default({}) }}"
+
+# Configuração estática efetiva. Sempre definida, para o template nunca
+# encontrar variável ausente; as tasks sobrescrevem com set_fact.
+fix_network_static: {}
 
 # Arquivos que atrapalham a rede depois da migração e são removidos:
 #   70-persistent-net.rules -> amarra o nome da interface ao MAC ANTIGO

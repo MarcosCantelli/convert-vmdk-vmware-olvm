@@ -64,7 +64,7 @@
   failed_when: false
   when:
     - fix_network_preserve_static | bool
-    - fix_network_static_override is none
+    - not (fix_network_has_override | bool)
   delegate_to: "{{ olvm_host }}"
 
 - name: "[fix_network] Ler cada arquivo de rede da imagem"
@@ -101,14 +101,14 @@
           | map('dict2items') | flatten | map(attribute='value')
           | selectattr('addresses', 'defined')
           | list | first) | default({}, true) }}
-  when: fix_network_static_override is none
+  when: not (fix_network_has_override | bool)
 
 - name: "[fix_network] Usar o endereço declarado em vars/vms.yml"
   # O override manual vence a detecção: serve para MUDAR o endereço durante a
   # migração, ou para forçar DHCP numa VM (basta declarar `network: {}`).
   ansible.builtin.set_fact:
     fix_network_static: "{{ fix_network_static_override }}"
-  when: fix_network_static_override is not none
+  when: fix_network_has_override | bool
 
 - name: "[fix_network] Anunciar o modo de rede escolhido"
   ansible.builtin.debug:
