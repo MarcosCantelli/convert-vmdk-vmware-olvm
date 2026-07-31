@@ -222,10 +222,19 @@ Os Jenkinsfiles **não** foram validados: exigem um controlador Jenkins para
 `curl -X POST -F "jenkinsfile=<jenkins/Jenkinsfile.migrate" $JENKINS_URL/pipeline-model-converter/validate`
 no seu controlador antes de confiar neles.
 
-### Migração validada de ponta a ponta
+### Migração validada em produção: 6 VMs
 
-A `App-Server-HO` (Ubuntu 24.04, 20 GB) foi migrada com sucesso pelo
-`migrate-single.yml`, confirmando no ambiente real:
+As seis VMs Linux do ambiente (Ubuntu Server 24.04, ~186 GB no total) foram
+migradas do vCenter para o OLVM por este repositório — `App-Server-HO`,
+`App-Server-PRD`, `MySQL-HO2`, `MySQL_HO`, `reiCar_TH` e `reiCar_TH2`. O lote
+completo terminou com `failed=0`.
+
+As três VMs Windows seguem comentadas em `ansible/vars/vms.yml`, cada uma com
+o motivo registrado: falta instalar os drivers virtio, a `VLAN_AD` ainda não
+existe no OLVM, e a `Win_Server_SQL_LAB` tem uma cadeia de snapshots que
+precisa ser consolidada no vCenter antes de qualquer migração.
+
+Confirmado no ambiente real:
 
 - autenticação do usuário Keycloak `admin@ovirt@internalsso` pelo SDK
 - `--insecure` do `ovirt-img` contra o certificado sem SAN
@@ -234,11 +243,24 @@ A `App-Server-HO` (Ubuntu 24.04, 20 GB) foi migrada com sucesso pelo
 - `bios_type: q35_sea_bios` e `operating_system: other_linux` aceitos pelo engine
 - idempotência: reexecuções pulam cópia, conversão e ajuste de rede já feitos
 
-O caminho encontrou seis defeitos que só aparecem contra o ambiente real —
-ESXi 6.7 em modo FIPS recusando ed25519, dois datastores em vez de um, quebra
-de linha em bloco YAML dobrado, aspas viajando para dentro do `scp`,
-aninhamento de `item` num loop e `--description` inexistente no `ovirt-img` do
-OL8. Todos estão corrigidos e documentados, com o sintoma junto da causa.
+O caminho encontrou dez defeitos que só aparecem contra o ambiente real, todos
+corrigidos e documentados com o sintoma junto da causa:
+
+| Defeito | Como se manifestava |
+|---|---|
+| ESXi 6.7 em modo FIPS recusa ed25519 | `Permission denied` com a chave certa instalada |
+| VMs em dois datastores, não um | caminho de origem inexistente |
+| quebra de linha em bloco YAML dobrado (`>-`) | `usage: ssh` seguido de `-o: command not found` |
+| aspas viajando para dentro do `scp` | `No such file or directory` em arquivo que existe |
+| `item` aninhado ao iterar sobre resultados | nome de arquivo virou o dump de um `stat` |
+| `--description` inexistente no `ovirt-img` do OL8 | texto escorregou para o argumento posicional |
+| `no_log` escondendo o erro sem proteger segredo | falha censurada, indiagnosticável |
+| `creates:` confiando em arquivo ainda sendo escrito | qcow2 truncado, `no operating systems were found` |
+| `default(None)` em template virando string vazia | toda VM saía em DHCP, em silêncio |
+| snapshot ativo copiado só pela base | migração "bem-sucedida" com dados de meses atrás |
+
+Os dois últimos são os mais instrutivos: nenhum dos dois gera erro. A migração
+termina, a VM boota, e o problema aparece semanas depois.
 
 **Ainda não testado contra o ambiente real:**
 

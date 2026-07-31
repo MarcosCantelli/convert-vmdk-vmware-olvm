@@ -494,6 +494,9 @@ Para migrá-la, faça à mão, com o pipeline parado:
 | `ModuleNotFoundError: ovirtsdk4` | SDK ausente no host | `dnf install python3-ovirt-engine-sdk4` |
 | Upload trava/expira | disco grande em NFS 1 GbE | aumente `upload_timeout` |
 | Metadados do storage domain corrompidos | escreveu dentro da pasta com UUID | trabalhe em `/mnt/sd1/migracao` |
+| VM migra "com sucesso" mas os dados estão velhos | **snapshot ativo** no VMware: o `-flat.vmdk` é só a base | consolide no vCenter (*Snapshots > Delete All*); a role `extract` agora aborta antes |
+| `no operating systems were found in the guest image` | qcow2 truncado — cópia interrompida ou duas execuções concorrentes | apague a pasta da VM em `/mnt/sd1/migracao` e refaça; a cópia atômica e a trava por VM previnem |
+| Toda VM sai em DHCP, mesmo com IP fixo | detecção desligada por `default(None)` virando string vazia | corrigido; se reaparecer, confira `fix_network_has_override` |
 | `Permission denied` no scp do ESXi | sem chave SSH | `authorized_keys` em `/etc/ssh/keys-root/` no ESXi |
 | `Permission denied` **mesmo com a chave instalada** | ESXi 6.7 em modo FIPS recusa ed25519 | use chave **RSA** (`ssh-keygen -t rsa -b 4096`); confirme em `/var/log/auth.log` do ESXi |
 | `no mutual signature algorithm` | cliente OL8 recusa RSA com SHA-1 | `PubkeyAcceptedKeyTypes +ssh-rsa` no `~/.ssh/config` do host, só para o IP do ESXi |
