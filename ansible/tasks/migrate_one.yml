@@ -114,7 +114,11 @@
   ansible.builtin.debug:
     msg:
       - "=== Migrando '{{ vm.name }}' ==="
-      - "Origem:  {{ esxi_host }}:{{ esxi_datastore_path }}/{{ vm.esxi_folder | default(vm.name) }}"
+      # esxi_vm_path (e não esxi_datastore_path) para a mensagem mostrar o
+      # datastore DESTA VM. Com o caminho global, uma VM que sobrescreve
+      # `esxi_datastore` aparecia no log com o datastore errado — a cópia ia
+      # para o lugar certo, mas o log induzia ao erro na hora de investigar.
+      - "Origem:  {{ esxi_host }}:{{ esxi_vm_path }}"
       - "Destino: cluster {{ ovirt_cluster }} / storage {{ vm.storage_domain | default(ovirt_storage_domain) }}"
       - "Discos:  {{ vm.disks | join(', ') }} (boot: {{ vm.disks | first }})"
       - "Firmware: {{ vm.firmware | default(default_firmware) }}"
