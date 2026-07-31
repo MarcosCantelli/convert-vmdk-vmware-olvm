@@ -59,13 +59,42 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: "[extract] Montar a lista de discos pendentes"
+  # Uma lista simples de NOMES. As tasks seguintes iteram sobre ela, e não
+  # sobre resultados de outras tasks: iterar sobre resultados aninha `item`
+  # dentro de `item` e leva a erros difíceis de enxergar.
+  ansible.builtin.set_fact:
+    extract_pending: >-
+      {{ extract_qcow2_stat.results | rejectattr('stat.exists') | map(attribute='item') | list }}
+
 # --------------------------------------------------------------------------
 # Cópia do ESXi -> NFS do host de virtualização
+#
 # Rodamos o scp DE DENTRO do host de virtualização (delegate_to), puxando do
 # ESXi. Motivo: o ESXi é BusyBox e não executa módulos Ansible; e assim os
 # dados não passam pelo runner do Jenkins.
+#
+# CÓPIA ATÔMICA — a razão de existir o diretório .incoming:
+# o scp escreve o arquivo aos poucos. Se ele for interrompido (rede, Ctrl-C,
+# uma segunda execução em paralelo), sobra um `-flat.vmdk` PARCIAL no destino
+# final. Na execução seguinte o `creates:` vê esse arquivo, conclui que a
+# cópia já foi feita, pula direto para a conversão e gera um qcow2 truncado.
+# O sintoma aparece só lá na frente, e mentindo:
+#   virt-customize: error: no operating systems were found in the guest image
+#
+# Copiando para .incoming e só então movendo (mv no mesmo filesystem é
+# atômico), o arquivo no destino final SÓ existe quando está completo — e aí
+# o `creates:` volta a dizer a verdade.
 # --------------------------------------------------------------------------
-- name: "[extract] Copiar par descritor+dados do ESXi"
+- name: "[extract] Criar a área temporária de cópia"
+  ansible.builtin.file:
+    path: "{{ vm_workdir }}/.incoming"
+    state: directory
+    mode: "0755"
+  when: extract_pending | length > 0
+  delegate_to: "{{ olvm_host }}"
+
+- name: "[extract] Copiar par descritor+dados do ESXi (para a área temporária)"
   # argv (lista) em vez de linha de comando: cada elemento é um argumento
   # separado, então não precisamos de shell no host de origem.
   #
@@ -84,14 +113,11 @@
   ansible.builtin.command:
     argv: >-
       {{ esxi_scp_argv
-         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item.item ~ '.vmdk',
-            esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item.item ~ extract_data_suffix ~ '.vmdk',
-            vm_workdir ~ '/'] }}
-    creates: "{{ vm_workdir }}/{{ item.item }}{{ extract_data_suffix }}.vmdk"
-  loop: "{{ extract_qcow2_stat.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-  when: not item.stat.exists
+         + [esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item ~ '.vmdk',
+            esxi_user ~ '@' ~ esxi_host ~ ':' ~ esxi_vm_path ~ '/' ~ item ~ extract_data_suffix ~ '.vmdk',
+            vm_workdir ~ '/.incoming/'] }}
+    creates: "{{ vm_workdir }}/{{ item }}{{ extract_data_suffix }}.vmdk"
+  loop: "{{ extract_pending }}"
   delegate_to: "{{ olvm_host }}"
   async: "{{ extract_async_timeout }}"
   poll: "{{ extract_async_poll }}"
@@ -99,10 +125,24 @@
   # preferimos ver o log completo do scp em caso de erro.
   no_log: "{{ esxi_use_ssh_password | bool }}"
 
+- name: "[extract] Publicar os arquivos copiados (mv atômico)"
+  # Só chega aqui se o scp terminou com sucesso — se ele falhar, os arquivos
+  # ficam em .incoming, o destino final continua vazio, e a próxima execução
+  # recopia do zero em vez de converter um arquivo pela metade.
+  ansible.builtin.command:
+    argv:
+      - mv
+      - "{{ vm_workdir }}/.incoming/{{ item }}.vmdk"
+      - "{{ vm_workdir }}/.incoming/{{ item }}{{ extract_data_suffix }}.vmdk"
+      - "{{ vm_workdir }}/"
+    creates: "{{ vm_workdir }}/{{ item }}{{ extract_data_suffix }}.vmdk"
+  loop: "{{ extract_pending }}"
+  delegate_to: "{{ olvm_host }}"
+
 # --------------------------------------------------------------------------
 # Conversão VMDK -> qcow2
 # `compat=1.1` é o formato qcow2 moderno; o oVirt/QEMU atual espera isso.
-# `-p` mostra progresso no log do Jenkins.
+# `-p` mostra progresso no log.
 # --------------------------------------------------------------------------
 - name: "[extract] Converter VMDK para qcow2 (compat=1.1)"
   ansible.builtin.command:
@@ -111,16 +151,20 @@
       -f vmdk
       -O qcow2
       -o compat=1.1
-      {{ vm_workdir }}/{{ item.item }}.vmdk
-      {{ vm_workdir }}/{{ item.item }}.qcow2
-    creates: "{{ vm_workdir }}/{{ item.item }}.qcow2"
-  loop: "{{ extract_qcow2_stat.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-  when: not item.stat.exists
+      {{ vm_workdir }}/{{ item }}.vmdk
+      {{ vm_workdir }}/{{ item }}.qcow2
+    creates: "{{ vm_workdir }}/{{ item }}.qcow2"
+  loop: "{{ extract_pending }}"
   delegate_to: "{{ olvm_host }}"
   async: "{{ extract_async_timeout }}"
   poll: "{{ extract_async_poll }}"
+
+- name: "[extract] Remover a área temporária de cópia"
+  ansible.builtin.file:
+    path: "{{ vm_workdir }}/.incoming"
+    state: absent
+  when: extract_pending | length > 0
+  delegate_to: "{{ olvm_host }}"
 
 - name: "[extract] Conferir o resultado da conversão"
   ansible.builtin.command:

@@ -126,6 +126,45 @@
 - name: "[migrate_one] Pipeline de migração"
   block:
 
+    # ----------------------------------------------------------------------
+    # TRAVA CONTRA EXECUÇÃO CONCORRENTE
+    #
+    # Duas execuções na mesma VM se destroem: uma copia o disco enquanto a
+    # outra vê o arquivo pela metade, acha que a cópia terminou e converte um
+    # qcow2 truncado. O erro só aparece etapas depois, e mentindo:
+    #   virt-customize: error: no operating systems were found in the guest image
+    #
+    # `mkdir` é atômico no POSIX: ou cria, ou falha porque já existe. É a
+    # primitiva de trava mais simples que funciona sobre NFS.
+    # ----------------------------------------------------------------------
+    - name: "[migrate_one] Garantir o diretório de trabalho antes de travar"
+      ansible.builtin.file:
+        path: "{{ vm_workdir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[migrate_one] Travar esta VM"
+      ansible.builtin.command:
+        argv: [mkdir, "{{ vm_workdir }}/.lock"]
+      register: migrate_one_lock
+      changed_when: migrate_one_lock.rc == 0
+      failed_when: false
+      delegate_to: "{{ olvm_host }}"
+
+    - name: "[migrate_one] Abortar se já há migração em andamento nesta VM"
+      ansible.builtin.assert:
+        that: migrate_one_lock.rc == 0
+        fail_msg: >-
+          ABORTADO: já existe migração em andamento para '{{ vm.name }}'
+          (trava em {{ vm_workdir }}/.lock).
+          Rodar duas vezes em paralelo corrompe o disco: uma execução converte
+          o que a outra ainda está copiando.
+          Confira com `pgrep -af ansible-playbook`. Se tiver certeza de que
+          nenhuma execução está rodando, a trava ficou de uma que morreu —
+          remova com: rmdir {{ vm_workdir }}/.lock
+        quiet: true
+
     - name: "[migrate_one] Autenticar no engine OLVM"
       ovirt.ovirt.ovirt_auth:
         url: "{{ ovirt_engine_api_url }}"
@@ -164,3 +203,12 @@
       when: ovirt_auth is defined
       delegate_to: "{{ olvm_host }}"
       no_log: true
+
+    - name: "[migrate_one] Liberar a trava desta VM"
+      # Só remove se foi ESTA execução que travou: assim uma segunda execução,
+      # barrada pela trava, não libera o caminho da que está trabalhando.
+      ansible.builtin.file:
+        path: "{{ vm_workdir }}/.lock"
+        state: absent
+      when: migrate_one_lock.rc | default(1) == 0
+      delegate_to: "{{ olvm_host }}"
