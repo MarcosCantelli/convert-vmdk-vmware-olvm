@@ -177,3 +177,9 @@ vm_state_after_create: present
 # ---------------------------------------------------------------------------
 guard_forbidden_names:
   - jenkins
+
+# Idade a partir da qual uma trava de migração é considerada órfã e assumida
+# automaticamente. Execução viva emite progresso a cada poucos minutos; uma
+# trava parada por horas é resto de execução morta (Ctrl-C, sessão fechada,
+# WSL suspenso). Generoso de propósito: converter e enviar disco grande demora.
+migrate_one_lock_stale_hours: 6
