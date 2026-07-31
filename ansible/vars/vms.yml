@@ -176,20 +176,24 @@ vms:
   #     refazê-las do zero. Decida isso antes de descomentar.
   # =========================================================================
 
-  # - name: Win_Server_25
-  #   esxi_datastore: VS2_HD1_1TB
-  #   esxi_folder: Win_Server_25
-  #   disks:
-  #     - Win_Server_25
-  #   firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
-  #   operating_system: other     # guestOS = windows9srv-64; ver nota no fim
-  #   cpu_sockets: 1
-  #   cpu_cores: 4
-  #   cpu_threads: 1
-  #   memory_gib: 4
-  #   disk_interface: sata        # até instalar o virtio-win
-  #   nic_interface: e1000        # até instalar o virtio-win
-  #   fix_network: false          # netplan não existe no Windows
+  # Windows Server · disco 40 GB · sem snapshot · sem VLAN_AD
+  # LIBERADA para migrar. Depois do primeiro boot: instalar o virtio-win e só
+  # então trocar disk_interface para virtio_scsi e nic_interface para virtio,
+  # um de cada vez, validando o boot entre as trocas.
+  - name: Win_Server_25
+    esxi_datastore: VS2_HD1_1TB
+    esxi_folder: Win_Server_25
+    disks:
+      - Win_Server_25
+    firmware: uefi              # CONFIRMADO: .vmx tem firmware = "efi"
+    operating_system: other     # guestOS = windows9srv-64; ver nota no fim
+    cpu_sockets: 1
+    cpu_cores: 4
+    cpu_threads: 1
+    memory_gib: 4
+    disk_interface: sata        # até instalar o virtio-win
+    nic_interface: e1000        # até instalar o virtio-win
+    fix_network: false          # netplan não existe no Windows
 
   # - name: Win_Server_SQL_LAB
   #   esxi_datastore: VS2_HD1_1TB
