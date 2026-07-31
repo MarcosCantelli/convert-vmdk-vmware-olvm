@@ -198,17 +198,30 @@
       # Não é caso de handler: precisamos travar AGORA, antes das próximas
       # tasks tocarem o disco. Handler só rodaria no fim do play, quando a
       # migração inteira já teria acontecido sem trava nenhuma.
+      # Registra em variável PRÓPRIA, e não em migrate_one_lock. Reusar o
+      # mesmo nome sobrescreve o resultado da primeira travagem: quando esta
+      # task é PULADA (o caso normal, sem trava órfã), o Ansible grava um
+      # resultado de skip, que não tem `rc`. O assert seguinte então quebrava
+      # com "dict object has no attribute rc" — mesmo tendo travado direito.
       ansible.builtin.command:
         argv: [mkdir, "{{ vm_workdir }}/.lock"]
-      register: migrate_one_lock
-      changed_when: migrate_one_lock.rc == 0
+      register: migrate_one_relock
+      changed_when: migrate_one_relock.rc == 0
       failed_when: false
       when: migrate_one_lock_stolen is changed
       delegate_to: "{{ olvm_host }}"
 
+    - name: "[migrate_one] Consolidar o resultado da travagem"
+      # Uma única verdade para as tasks seguintes: travamos, de um jeito ou de
+      # outro? `default(1)` cobre o caso de a task ter sido pulada.
+      ansible.builtin.set_fact:
+        migrate_one_locked: >-
+          {{ (migrate_one_lock.rc | default(1) | int) == 0
+             or (migrate_one_relock.rc | default(1) | int) == 0 }}
+
     - name: "[migrate_one] Abortar se já há migração em andamento nesta VM"
       ansible.builtin.assert:
-        that: migrate_one_lock.rc == 0
+        that: migrate_one_locked | bool
         fail_msg: >-
           ABORTADO: já existe migração em andamento para '{{ vm.name }}'
           (trava em {{ vm_workdir }}/.lock).
@@ -283,5 +296,5 @@
       ansible.builtin.file:
         path: "{{ vm_workdir }}/.lock"
         state: absent
-      when: migrate_one_lock.rc | default(1) == 0
+      when: migrate_one_locked | default(false) | bool
       delegate_to: "{{ olvm_host }}"
